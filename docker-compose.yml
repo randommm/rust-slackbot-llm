@@ -1,0 +1,20 @@
+services:
+    rust-slackbot-llms:
+        container_name: rust-slackbot-llms
+        image: ghcr.io/marcostable/rust-slackbot-llms
+        build:
+            context: .
+            dockerfile: Dockerfile
+        ports:
+            - "127.0.0.1:60202:60202"
+        restart: always
+        command: tail -f /dev/null
+        volumes:
+            - type: bind
+              source: ./.env
+              target: /app/.env
+              read_only: true
+            - type: bind
+              source: ./db
+              target: /app/db
+              read_only: false
