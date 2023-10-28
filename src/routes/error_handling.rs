@@ -5,6 +5,7 @@ use axum::{
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
+#[derive(Debug)]
 pub struct AppError {
     code: StatusCode,
     internal_message: String,

@@ -14,6 +14,8 @@ use sha2::Sha256;
 use sqlx::SqlitePool;
 use std::time::SystemTime;
 
+const PRINT_SLACK_EVENTS: bool = false;
+
 pub async fn get_slack_events(
     State(db_pool): State<SqlitePool>,
     State(slack_signing_secret): State<SlackSigningSecret>,
@@ -22,8 +24,10 @@ pub async fn get_slack_events(
     headers: HeaderMap,
     body: String,
 ) -> Result<impl IntoResponse, AppError> {
-    // println!("Slack event body: {:?}", body);
-    // println!("Slack event headers: {:?}", headers);
+    if PRINT_SLACK_EVENTS {
+        println!("Slack event body: {:?}", body);
+        println!("Slack event headers: {:?}", headers);
+    }
 
     let provided_timestamp = headers
         .get("X-Slack-Request-Timestamp")
@@ -71,7 +75,7 @@ pub async fn get_slack_events(
     if let Some(challenge) = query.get("challenge").and_then(|x| x.as_str()) {
         api_response["challenge"] = Value::String(challenge.to_owned());
     }
-    tokio::spawn(process_slack_events(
+    tokio::spawn(try_process_slack_events(
         slack_oauth_token,
         llm_api_token,
         db_pool,
@@ -81,14 +85,30 @@ pub async fn get_slack_events(
     Ok(Json(api_response))
 }
 
-pub async fn process_slack_events(
+pub async fn try_process_slack_events(
     slack_oauth_token: SlackOAuthToken,
     llm_api_token: LlmApiToken,
     db_pool: SqlitePool,
     query: Value,
 ) -> Result<(), AppError> {
-    // println!("Slack event received by processor: {:?}", query);
+    let value = process_slack_events(slack_oauth_token, llm_api_token, db_pool, &query).await;
 
+    if let Err(ref value) = value {
+        println!(
+            "Failed to process Slack event.\nGot error:\n{:?}\nGot payload:{:?} ",
+            value, query
+        );
+    }
+
+    value
+}
+
+async fn process_slack_events(
+    slack_oauth_token: SlackOAuthToken,
+    llm_api_token: LlmApiToken,
+    db_pool: SqlitePool,
+    query: &Value,
+) -> Result<(), AppError> {
     if let Some(event) = query.get("event") {
         if event.get("bot_id").is_none() {
             if let Some(type_) = event.get("type") {
@@ -99,7 +119,7 @@ pub async fn process_slack_events(
                         if let Some(channel) = event.get("channel") {
                             let channel = channel.as_str().ok_or("channel is not a string")?;
 
-                            let reply = if text == "delete" {
+                            let reply_to_user = if text == "delete" || text == "\"delete\"" {
                                 let _ = sqlx::query(
                                     "DELETE FROM sessions
                                     WHERE channel = $1",
@@ -108,45 +128,47 @@ pub async fn process_slack_events(
                                 .execute(&db_pool)
                                 .await;
 
-                                "Section deleted".to_owned()
+                                "Ok, the LLM section was deleted. A new message will start a fresh LLM section.".to_owned()
                             } else {
                                 let mut payload: Value = Default::default();
                                 payload["inputs"] = Value::default();
                                 payload["options"] = Value::default();
+                                payload["options"]["wait_for_model"] = Value::Bool(true);
 
-                                // select check model state exists
+                                // select that checks if a state exists
                                 let query: Result<(Vec<u8>,), _> = sqlx::query_as(
-                                    r#"SELECT id,
+                                    r#"SELECT model_state
                                         FROM sessions WHERE channel = $1;"#,
                                 )
                                 .bind(channel)
                                 .fetch_one(&db_pool)
                                 .await;
 
-                                let mut past_user_inputs = Vec::<Value>::default();
-                                let mut generated_responses = Vec::<Value>::default();
                                 if let Ok(query) = query {
                                     let (model_state,) = query;
                                     let deserialized: Result<(_, _), _> =
                                         bincode::deserialize(&model_state[..]);
                                     if let Ok(deserialized) = deserialized {
-                                        past_user_inputs = deserialized.0;
-                                        generated_responses = deserialized.1;
+                                        let past_user_inputs: Vec<String> = deserialized.0;
+                                        let generated_responses: Vec<String> = deserialized.1;
                                         payload["inputs"]["past_user_inputs"] =
-                                            serde_json::to_value(&past_user_inputs)?;
+                                            serde_json::to_value(past_user_inputs)?;
                                         payload["inputs"]["generated_responses"] =
-                                            serde_json::to_value(&generated_responses)?;
-                                    } else {
-                                        println!("Failed to deserialize model state");
+                                            serde_json::to_value(generated_responses)?;
+                                    } else if let Err(e) = deserialized {
+                                        println!("Failed to deserialize model state: {e}");
                                     }
                                 } else {
+                                    if PRINT_SLACK_EVENTS {
+                                        println!("Starting new section");
+                                    }
                                     let timestamp = SystemTime::now()
                                         .duration_since(SystemTime::UNIX_EPOCH)
                                         .map_err(|e| format!("Error: {:?}", e))?
                                         .as_secs()
                                         as i64;
                                     sqlx::query(
-                                        "INSERT OR IGNORE INTO trades_resampled
+                                        "INSERT OR IGNORE INTO sessions
                                         (channel, created_at, updated_at)
                                         VALUES ($1, $2, $3);",
                                     )
@@ -157,56 +179,85 @@ pub async fn process_slack_events(
                                     .await?;
                                 }
 
-                                payload["options"]["wait_for_model"] = Value::Bool(true);
                                 payload["inputs"]["text"] = Value::String(text.to_owned());
+                                if PRINT_SLACK_EVENTS {
+                                    println!("Payload sent: {:?}", payload);
+                                }
 
                                 let reqw_client = reqwest::Client::new();
-                                let reply = reqw_client
-                                    .post("https://api-inference.huggingface.co/models/bert-base-uncased")
+                                let reqw_response = reqw_client
+                                    .post("https://api-inference.huggingface.co/models/microsoft/DialoGPT-large")
                                     .header(AUTHORIZATION, format!("Bearer {}", llm_api_token.0))
                                     .json(&payload)
                                     .send()
                                     .and_then(|reqw_response| async move {reqw_response.text().await}).await.map_err(|e| {
-                                        println!("Failed to send request to LLM: {e}");
-                                    });
+                                        format!("Failed to send request to LLM: {e}")
+                                    })?;
 
-                                if let Ok(reply) = reply {
-                                    past_user_inputs.push(Value::String(text.to_owned()));
-                                    generated_responses.push(Value::String(reply.to_owned()));
-                                    let model_state = (past_user_inputs, generated_responses);
-                                    let encoded: Vec<u8> =
-                                        bincode::serialize(&model_state).unwrap();
-                                    let timestamp = SystemTime::now()
-                                        .duration_since(SystemTime::UNIX_EPOCH)
-                                        .map_err(|e| format!("Error: {:?}", e))?
-                                        .as_secs()
-                                        as i64;
-                                    sqlx::query(
-                                        "INSERT INTO trades_resampled
+                                let mut reqw_response: Value =
+                                    serde_json::from_str(reqw_response.as_str())?;
+                                if PRINT_SLACK_EVENTS {
+                                    println!("Received response {:?}", reqw_response);
+                                }
+                                let generated_text = reqw_response["generated_text"]
+                                    .as_str()
+                                    .ok_or("Failed to get or parse field generated_text from LLM")?
+                                    .to_owned();
+
+                                let conversation = reqw_response["conversation"].take();
+                                let generated_responses = conversation["generated_responses"]
+                                    .as_array()
+                                    .map(|x| {
+                                        x.iter()
+                                            .flat_map(|x| x.as_str())
+                                            .map(|x| x.to_owned())
+                                            .collect::<Vec<_>>()
+                                    })
+                                    .unwrap_or_default();
+                                let past_user_inputs = conversation["past_user_inputs"]
+                                    .as_array()
+                                    .map(|x| {
+                                        x.iter()
+                                            .flat_map(|x| x.as_str())
+                                            .map(|x| x.to_owned())
+                                            .collect::<Vec<_>>()
+                                    })
+                                    .unwrap_or_default();
+
+                                let model_state = (past_user_inputs, generated_responses);
+                                if PRINT_SLACK_EVENTS {
+                                    println!("Saving model state {:?}", model_state);
+                                }
+                                let encoded: Vec<u8> = bincode::serialize(&model_state)
+                                    .map_err(|e| format!("Failed to encode model {e}"))?;
+                                let timestamp = SystemTime::now()
+                                    .duration_since(SystemTime::UNIX_EPOCH)
+                                    .map_err(|e| format!("Error: {:?}", e))?
+                                    .as_secs()
+                                    as i64;
+                                sqlx::query(
+                                    "INSERT INTO sessions
                                         (channel, created_at, updated_at, model_state)
                                         VALUES ($1, $2, $3, $4)
                                         ON CONFLICT (channel)
                                         DO UPDATE SET
                                         model_state = EXCLUDED.model_state,
                                         updated_at = EXCLUDED.updated_at;",
-                                    )
-                                    .bind(channel)
-                                    .bind(timestamp)
-                                    .bind(timestamp)
-                                    .bind(encoded)
-                                    .execute(&db_pool)
-                                    .await?;
-                                    "Reply from LLM:\n".to_owned()
-                                        + reply.as_str()
-                                        + "\n to delete section, send \"delete\" (without clauses)"
-                                } else {
-                                    "Failed to get reply from LLM".to_owned()
-                                }
+                                )
+                                .bind(channel)
+                                .bind(timestamp)
+                                .bind(timestamp)
+                                .bind(encoded)
+                                .execute(&db_pool)
+                                .await?;
+                                "Reply from the LLM:\n".to_owned()
+                                    + generated_text.as_str()
+                                    + "\nNote: to delete the LLM chat section, send \"delete\""
                             };
 
                             let reqw_client = reqwest::Client::new();
                             let form = multipart::Form::new()
-                                .text("text", reply)
+                                .text("text", reply_to_user)
                                 .text("channel", channel.to_owned());
                             let reqw_response = reqw_client
                                 .post("https://slack.com/api/chat.postMessage")

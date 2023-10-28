@@ -44,6 +44,6 @@ pub async fn create_routes(
         .with_state(app_state.clone());
 
     Ok(Router::new()
-        .nest("/slackbot/api/v1", api)
+        .nest("/v1", api)
         .fallback(get(pages::not_found_json)))
 }
