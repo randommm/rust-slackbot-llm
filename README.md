@@ -50,3 +50,10 @@ cargo run
 * A yellow upper box will show up requesting you the reinstall the App, proceed with that.
 
 * Go to App Home (https://api.slack.com/apps/YOURAPPID/app-home) and check the box "Allow users to send Slash commands and messages from the messages tab".
+
+# An extra: plotting
+
+If configured everything correctly, you should have you also have support for plotting out of the box. Just send plot as message to chat bot to get an example:
+
+<img src="https://github.com/randommm/rust-slackbot-llm/assets/4267674/ab651be4-2ebb-4607-9977-1515be80e2e6" alt="screenshot" width="300"/>
+
