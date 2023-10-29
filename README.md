@@ -1,4 +1,4 @@
-An Slack chat bot written in Rust that allows the user to interact with a large language model.
+A Slack chat bot written in Rust that allows the user to interact with a large language model.
 
 <img src="https://github.com/randommm/rust-slackbot-llm/assets/4267674/d1da83f2-4dd4-43f7-943d-36e12cee232a" alt="screenshot" width="300"/>
 
@@ -12,7 +12,7 @@ An Slack chat bot written in Rust that allows the user to interact with a large 
 
 * Now you need to deploy your app following the steps of the next section before continuing with the Slack app configuration.
 
-## Using this repo
+## Configuring, compiling and running
 
 Generate a token from Hugging Face at (https://huggingface.co/settings/tokens).
 
@@ -41,9 +41,28 @@ or with plain `cargo`:
 cargo run
 ```
 
-# Concluding the deployment of your Slack app
+## Public IP address
 
-* Navigate to "Event Subscriptions" (https://api.slack.com/apps/YOURAPPID/event-subscriptions). On the requested URL section, fill in https://your_domain_here/v1/slack_events and if everything was properly configured in the previous step, you should receive a "verified" status.
+When you run the App, it's exposed via port 51005 and on HTTP only, therefore, it's recommend that install Nginx and add the following configuration (probably at `/etc/nginx/sites-available/default`) to:
+
+        server {
+            server_name your_domain_here.com;
+            location / {
+                proxy_pass http://127.0.0.1:51005;
+                proxy_set_header Host $host;
+            }
+            listen 80;
+        }
+
+And then (after pointing your DNS to your domain) run `sudo certbot --nginx`.
+
+If you don't own a domain, you might wanna try your luck with https://nip.io/.
+
+You also need to have a reacheable IP address for Slack to deliver the payloads to your bot. Sadly this is not possible with many residential internet ISPs which now use carrier grade NAT, so as a work around you can get a simple machine on a cloud provider (e.g.: AFAIK, Google Cloud has a always free tier, use at your own risk) and run the app there or run at your local machine and redirect the port to cloud machine using SSH `ssh your_domain_here.com -R 127.0.0.1:51005:127.0.0.1:51005`.
+
+## Concluding the deployment of your Slack app
+
+* Navigate to "Event Subscriptions" (https://api.slack.com/apps/YOURAPPID/event-subscriptions). On the requested URL section, fill in https://your_domain_here.com/v1/slack_events and if everything was properly configured in the previous step, you should receive a "verified" status.
 
 * On "Subscribe to bot events", add scopes "app_mention" and "message.im" and click on "Save changes".
 
@@ -51,7 +70,7 @@ cargo run
 
 * Go to App Home (https://api.slack.com/apps/YOURAPPID/app-home) and check the box "Allow users to send Slash commands and messages from the messages tab".
 
-# An extra: plotting
+## An extra: plotting
 
 If configured everything correctly, you should have you also have support for plotting out of the box. Just send plot as message to chat bot to get an example:
 
