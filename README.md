@@ -6,7 +6,7 @@ An Slack chat bot written in Rust that allows the user to interact with a large 
 
 * Go to https://api.slack.com/apps and create a new app from scratch.
 
-* Navigate to "OAuth & Permissions" (https://api.slack.com/apps/YOURAPPID/oauth). Go to section "Bot Token Scopes", click on "Add an Oauth Scope", select scope "chat:write". Then click on "install to Workspace". You will obtain the "Bot User OAuth Token" on this page then.
+* Navigate to "OAuth & Permissions" (https://api.slack.com/apps/YOURAPPID/oauth). Go to section "Bot Token Scopes", click on "Add an Oauth Scope", select scopes "app_mentions:read", "chat:write", "files:write", "im:history". Then click on "install to Workspace". You will obtain the "Bot User OAuth Token" on this page then.
 
 * Navigate to "Basic Information" (https://api.slack.com/apps/YOURAPPID/general). Here you will obtain the "Signing secret".
 

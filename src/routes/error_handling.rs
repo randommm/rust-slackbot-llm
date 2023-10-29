@@ -94,6 +94,19 @@ impl From<axum::http::header::ToStrError> for AppError {
     }
 }
 
+impl From<plotters::drawing::DrawingAreaErrorKind<plotters_bitmap::BitMapBackendError>>
+    for AppError
+{
+    fn from(
+        err: plotters::drawing::DrawingAreaErrorKind<plotters_bitmap::BitMapBackendError>,
+    ) -> Self {
+        AppError::new(format!(
+            "plotters::drawing::DrawingAreaErrorKind error: {:#}",
+            err
+        ))
+    }
+}
+
 impl From<std::num::ParseFloatError> for AppError {
     fn from(err: std::num::ParseFloatError) -> Self {
         AppError::new(format!("std::num::ParseFloatError error: {:#}", err))

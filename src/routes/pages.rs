@@ -129,11 +129,19 @@ async fn process_slack_events(
                                 .await;
 
                                 "Ok, the LLM section was deleted. A new message will start a fresh LLM section.".to_owned()
+                            } else if text == "plot" || text == "\"plot\"" {
+                                return plot_random_stuff(
+                                    channel.to_owned(),
+                                    slack_oauth_token.clone(),
+                                )
+                                .await;
                             } else {
                                 let mut payload: Value = Default::default();
                                 payload["inputs"] = Value::default();
                                 payload["options"] = Value::default();
                                 payload["options"]["wait_for_model"] = Value::Bool(true);
+                                payload["options"]["repetition_penalty"] = serde_json::json!(80.0);
+                                payload["options"]["temperature"] = serde_json::json!(10.0);
 
                                 // select that checks if a state exists
                                 let query: Result<(Vec<u8>,), _> = sqlx::query_as(
@@ -273,6 +281,97 @@ async fn process_slack_events(
                 }
             }
         }
+    }
+    Ok(())
+}
+
+pub async fn plot_random_stuff(
+    channel: String,
+    slack_oauth_token: SlackOAuthToken,
+) -> Result<(), AppError> {
+    let mut buffer_ = vec![0; 640 * 480 * 3];
+    {
+        // just an example adapted from plotters homepage
+        // https://github.com/plotters-rs/plotters
+        use plotters::prelude::*;
+        let root = BitMapBackend::with_buffer(&mut buffer_, (640, 480)).into_drawing_area();
+        root.fill(&WHITE)?;
+        let mut chart = ChartBuilder::on(&root)
+            .caption("Some plots", ("sans-serif", 50).into_font())
+            .margin(5)
+            .x_label_area_size(30)
+            .y_label_area_size(30)
+            .build_cartesian_2d(-1f32..1f32, -0.1..2f32)?;
+
+        chart.configure_mesh().draw()?;
+
+        chart
+            .draw_series(LineSeries::new(
+                (-50..=50).map(|x| x as f32 / 50.0).map(|x| (x, x.powi(2))),
+                &RED,
+            ))?
+            .label("y = x^2")
+            .legend(|(x, y)| PathElement::new(vec![(x, y), (x + 20, y)], RED));
+
+        chart
+            .draw_series(LineSeries::new(
+                (-50..=50).map(|x| x as f32 / 50.0).map(|x| (x, x.powi(4))),
+                &GREEN,
+            ))?
+            .label("y = x^4")
+            .legend(|(x, y)| PathElement::new(vec![(x, y), (x + 20, y)], GREEN));
+
+        chart
+            .draw_series(LineSeries::new(
+                (-50..=50)
+                    .map(|x| x as f32 / 50.0)
+                    .map(|x| (x, x.powi(4) + x.powi(2))),
+                &BLUE,
+            ))?
+            .label("y = x^2 + x^4")
+            .legend(|(x, y)| PathElement::new(vec![(x, y), (x + 20, y)], BLUE));
+
+        chart
+            .configure_series_labels()
+            .background_style(WHITE.mix(0.8))
+            .border_style(BLACK)
+            .draw()?;
+
+        root.present()?;
+    }
+
+    let image = image::RgbImage::from_raw(640, 480, buffer_)
+        .ok_or("Failed to generate image from buffer")?;
+    let mut bytes: Vec<u8> = Vec::new();
+    image
+        .write_to(
+            &mut std::io::Cursor::new(&mut bytes),
+            image::ImageOutputFormat::Png,
+        )
+        .map_err(|e| format!("image write_to error: {e}"))?;
+
+    let reqw_client = reqwest::Client::new();
+    let part = multipart::Part::stream(bytes)
+        .file_name("plot.png")
+        .mime_str("image/png")?;
+    let form = multipart::Form::new()
+        .text("channels", channel)
+        .text("title", "A plot for ya")
+        .part("file", part);
+    let reqw_response = reqw_client
+        .post("https://slack.com/api/files.upload")
+        .header(AUTHORIZATION, format!("Bearer {}", slack_oauth_token.0))
+        .multipart(form)
+        .send()
+        .await?;
+    let reqw_response = reqw_response
+        .text()
+        .await
+        .map_err(|e| format!("Failed to read response body: {e}"))?;
+    let reqw_response: Value = serde_json::from_str(&reqw_response)
+        .map_err(|e| format!("Could not parse response body: {e}"))?;
+    if PRINT_SLACK_EVENTS {
+        println!("Received send plot response {:?}", reqw_response);
     }
     Ok(())
 }
