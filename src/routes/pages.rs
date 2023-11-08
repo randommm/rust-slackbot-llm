@@ -1,12 +1,10 @@
-use super::{AppError, LlmApiToken, SlackOAuthToken, SlackSigningSecret};
+use super::{llm::Model, AppError, SlackOAuthToken, SlackSigningSecret};
 use axum::{
     extract::State,
     http::{HeaderMap, StatusCode},
     response::IntoResponse,
     Json,
 };
-
-use futures::future::TryFutureExt;
 use hmac::{Hmac, Mac};
 use reqwest::{header::AUTHORIZATION, multipart};
 use serde_json::Value;
@@ -20,7 +18,7 @@ pub async fn get_slack_events(
     State(db_pool): State<SqlitePool>,
     State(slack_signing_secret): State<SlackSigningSecret>,
     State(slack_oauth_token): State<SlackOAuthToken>,
-    State(llm_api_token): State<LlmApiToken>,
+    State(model): State<Model>,
     headers: HeaderMap,
     body: String,
 ) -> Result<impl IntoResponse, AppError> {
@@ -77,7 +75,7 @@ pub async fn get_slack_events(
     }
     tokio::spawn(try_process_slack_events(
         slack_oauth_token,
-        llm_api_token,
+        model,
         db_pool,
         query,
     ));
@@ -87,11 +85,11 @@ pub async fn get_slack_events(
 
 pub async fn try_process_slack_events(
     slack_oauth_token: SlackOAuthToken,
-    llm_api_token: LlmApiToken,
+    model: Model,
     db_pool: SqlitePool,
     query: Value,
 ) -> Result<(), AppError> {
-    let value = process_slack_events(slack_oauth_token, llm_api_token, db_pool, &query).await;
+    let value = process_slack_events(slack_oauth_token, model, db_pool, &query).await;
 
     if let Err(ref value) = value {
         println!(
@@ -105,7 +103,7 @@ pub async fn try_process_slack_events(
 
 async fn process_slack_events(
     slack_oauth_token: SlackOAuthToken,
-    llm_api_token: LlmApiToken,
+    model: Model,
     db_pool: SqlitePool,
     query: &Value,
 ) -> Result<(), AppError> {
@@ -117,6 +115,7 @@ async fn process_slack_events(
                     if let Some(text) = event.get("text") {
                         let text = text.as_str().ok_or("text is not a string")?;
                         if let Some(channel) = event.get("channel") {
+                            let reqw_client = reqwest::Client::new();
                             let channel = channel.as_str().ok_or("channel is not a string")?;
 
                             let reply_to_user = if text == "delete" || text == "\"delete\"" {
@@ -136,13 +135,6 @@ async fn process_slack_events(
                                 )
                                 .await;
                             } else {
-                                let mut payload: Value = Default::default();
-                                payload["inputs"] = Value::default();
-                                payload["options"] = Value::default();
-                                payload["options"]["wait_for_model"] = Value::Bool(true);
-                                payload["options"]["repetition_penalty"] = serde_json::json!(80.0);
-                                payload["options"]["temperature"] = serde_json::json!(10.0);
-
                                 // select that checks if a state exists
                                 let query: Result<(Vec<u8>,), _> = sqlx::query_as(
                                     r#"SELECT model_state
@@ -152,20 +144,11 @@ async fn process_slack_events(
                                 .fetch_one(&db_pool)
                                 .await;
 
-                                if let Ok(query) = query {
+                                let pre_prompt_tokens = if let Ok(query) = query {
                                     let (model_state,) = query;
-                                    let deserialized: Result<(_, _), _> =
+                                    let deserialized: Result<_, _> =
                                         bincode::deserialize(&model_state[..]);
-                                    if let Ok(deserialized) = deserialized {
-                                        let past_user_inputs: Vec<String> = deserialized.0;
-                                        let generated_responses: Vec<String> = deserialized.1;
-                                        payload["inputs"]["past_user_inputs"] =
-                                            serde_json::to_value(past_user_inputs)?;
-                                        payload["inputs"]["generated_responses"] =
-                                            serde_json::to_value(generated_responses)?;
-                                    } else if let Err(e) = deserialized {
-                                        println!("Failed to deserialize model state: {e}");
-                                    }
+                                    deserialized.unwrap_or_default()
                                 } else {
                                     if PRINT_SLACK_EVENTS {
                                         println!("Starting new section");
@@ -185,58 +168,31 @@ async fn process_slack_events(
                                     .bind(timestamp)
                                     .execute(&db_pool)
                                     .await?;
-                                }
+                                    Default::default()
+                                };
 
-                                payload["inputs"]["text"] = Value::String(text.to_owned());
-                                if PRINT_SLACK_EVENTS {
-                                    println!("Payload sent: {:?}", payload);
-                                }
-
-                                let reqw_client = reqwest::Client::new();
-                                let reqw_response = reqw_client
-                                    .post("https://api-inference.huggingface.co/models/microsoft/DialoGPT-large")
-                                    .header(AUTHORIZATION, format!("Bearer {}", llm_api_token.0))
-                                    .json(&payload)
+                                let form = multipart::Form::new()
+                                    .text("text", "Running the LLM...")
+                                    .text("channel", channel.to_owned());
+                                let _ = reqw_client
+                                    .post("https://slack.com/api/chat.postMessage")
+                                    .header(
+                                        AUTHORIZATION,
+                                        format!("Bearer {}", slack_oauth_token.0),
+                                    )
+                                    .multipart(form)
                                     .send()
-                                    .and_then(|reqw_response| async move {reqw_response.text().await}).await.map_err(|e| {
-                                        format!("Failed to send request to LLM: {e}")
-                                    })?;
+                                    .await;
 
-                                let mut reqw_response: Value =
-                                    serde_json::from_str(reqw_response.as_str())?;
-                                if PRINT_SLACK_EVENTS {
-                                    println!("Received response {:?}", reqw_response);
-                                }
-                                let generated_text = reqw_response["generated_text"]
-                                    .as_str()
-                                    .ok_or("Failed to get or parse field generated_text from LLM")?
-                                    .to_owned();
-
-                                let conversation = reqw_response["conversation"].take();
-                                let generated_responses = conversation["generated_responses"]
-                                    .as_array()
-                                    .map(|x| {
-                                        x.iter()
-                                            .flat_map(|x| x.as_str())
-                                            .map(|x| x.to_owned())
-                                            .collect::<Vec<_>>()
-                                    })
-                                    .unwrap_or_default();
-                                let past_user_inputs = conversation["past_user_inputs"]
-                                    .as_array()
-                                    .map(|x| {
-                                        x.iter()
-                                            .flat_map(|x| x.as_str())
-                                            .map(|x| x.to_owned())
-                                            .collect::<Vec<_>>()
-                                    })
+                                let (generated_text, next_pre_prompt_tokens) = model
+                                    .interact(text.to_owned(), &pre_prompt_tokens)
+                                    .await
                                     .unwrap_or_default();
 
-                                let model_state = (past_user_inputs, generated_responses);
                                 if PRINT_SLACK_EVENTS {
-                                    println!("Saving model state {:?}", model_state);
+                                    println!("Saving model state");
                                 }
-                                let encoded: Vec<u8> = bincode::serialize(&model_state)
+                                let encoded: Vec<u8> = bincode::serialize(&next_pre_prompt_tokens)
                                     .map_err(|e| format!("Failed to encode model {e}"))?;
                                 let timestamp = SystemTime::now()
                                     .duration_since(SystemTime::UNIX_EPOCH)
@@ -263,7 +219,6 @@ async fn process_slack_events(
                                     + "\nNote: to delete the LLM chat section, send \"delete\""
                             };
 
-                            let reqw_client = reqwest::Client::new();
                             let form = multipart::Form::new()
                                 .text("text", reply_to_user)
                                 .text("channel", channel.to_owned());

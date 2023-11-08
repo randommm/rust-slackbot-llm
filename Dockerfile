@@ -14,6 +14,6 @@ RUN rm -rf src
 
 COPY src src
 
-RUN cargo build --release --locked
+RUN touch src/main.rs && cargo build --release --locked
 
 CMD cargo run --release --locked

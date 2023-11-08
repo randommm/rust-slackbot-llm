@@ -1,4 +1,5 @@
 mod error_handling;
+mod llm;
 mod pages;
 use axum::{
     extract::FromRef,
@@ -7,6 +8,8 @@ use axum::{
 };
 use error_handling::AppError;
 use sqlx::SqlitePool;
+
+use llm::{Model, ModelBuilder};
 
 #[derive(Clone, FromRef)]
 pub struct SlackOAuthToken(pub String);
@@ -23,6 +26,7 @@ pub struct AppState {
     pub slack_oauth_token: SlackOAuthToken,
     pub slack_signing_secret: SlackSigningSecret,
     pub llm_api_token: LlmApiToken,
+    pub llm_model: Model,
 }
 
 pub async fn create_routes(
@@ -36,6 +40,7 @@ pub async fn create_routes(
         slack_oauth_token: SlackOAuthToken(slack_oauth_token),
         slack_signing_secret: SlackSigningSecret(slack_signing_secret),
         llm_api_token: LlmApiToken(llm_api_token),
+        llm_model: ModelBuilder::default().build()?,
     };
 
     let api = Router::new()
