@@ -18,7 +18,6 @@ Create an `.env` file at the root of the repository (same folder as the `Cargo.t
 
         SLACK_OAUTH_TOKEN="bot_user_oauth_token_from_previous_step"
         SLACK_SIGNING_SECRET="signing_secret_from_previous_step"
-        DATABASE_URL="sqlite://db/db.sqlite3"
 
 and run without Docker compose:
 
@@ -72,4 +71,3 @@ You also need to have a reacheable IP address for Slack to deliver the payloads 
 If configured everything correctly, you should have you also have support for plotting out of the box. Just send plot as message to chat bot to get an example:
 
 <img src="https://github.com/randommm/rust-slackbot-llm/assets/4267674/ab651be4-2ebb-4607-9977-1515be80e2e6" alt="screenshot" width="300"/>
-
