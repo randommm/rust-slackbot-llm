@@ -255,15 +255,20 @@ fn format_size(size_in_bytes: usize) -> String {
 mod tests {
     use super::ModelBuilder;
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
     async fn sequential_dialog() {
-        let model = ModelBuilder::default().build().unwrap();
-        let prompt = "Create a basic Rust program".to_string();
+        let model = ModelBuilder {
+            sample_len: 30,
+            ..Default::default()
+        }
+        .build()
+        .unwrap();
+        let prompt = "Create a Rust program in 20 words".to_string();
         let pre_prompt_tokens = vec![];
         let (output, pre_prompt_tokens) = model.interact(prompt, &pre_prompt_tokens).await.unwrap();
         println!("{output}");
 
-        let prompt = "Give me the Cargo.toml".to_string();
+        let prompt = "Give me the Cargo.toml in 20 words".to_string();
         let (output, _) = model.interact(prompt, &pre_prompt_tokens).await.unwrap();
         println!("{output}");
     }
