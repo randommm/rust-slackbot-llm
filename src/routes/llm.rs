@@ -138,75 +138,78 @@ impl Model {
     ) -> Result<(String, Vec<u32>), Box<dyn std::error::Error>> {
         let mut model_weights = self.model_weights.lock().await;
 
-        let prompt_str = format!("[INST] {prompt_str} [/INST]");
-        // print!("{}", &prompt_str);
-        let tokens = self
-            .tokenizer
-            .encode(prompt_str, true)
-            .map_err(|e| format!("Error encoding tokenizer: {e}"))?;
+        tokio::task::block_in_place(move || {
+            let prompt_str = format!("[INST] {prompt_str} [/INST]");
+            // print!("{}", &prompt_str);
+            let tokens = self
+                .tokenizer
+                .encode(prompt_str, true)
+                .map_err(|e| format!("Error encoding tokenizer: {e}"))?;
 
-        let prompt_tokens = [pre_prompt_tokens, tokens.get_ids()].concat();
-        let to_sample = self.sample_len.saturating_sub(1);
-        let prompt_tokens = if prompt_tokens.len() + to_sample > model::MAX_SEQ_LEN - 10 {
-            let to_remove = prompt_tokens.len() + to_sample + 10 - model::MAX_SEQ_LEN;
-            prompt_tokens[prompt_tokens.len().saturating_sub(to_remove)..].to_vec()
-        } else {
-            prompt_tokens
-        };
-        let mut all_tokens = vec![];
-        let mut logits_processor = LogitsProcessor::new(self.seed, self.temperature, self.top_p);
-
-        let device = Device::Cpu;
-        let start_prompt_processing = std::time::Instant::now();
-        let mut next_token = {
-            let input = Tensor::new(prompt_tokens.as_slice(), &device)?.unsqueeze(0)?;
-            let logits = model_weights.forward(&input, 0)?;
-            let logits = logits.squeeze(0)?;
-            logits_processor.sample(&logits)?
-        };
-        let prompt_dt = start_prompt_processing.elapsed();
-        all_tokens.push(next_token);
-        let mut output = String::new();
-        extract_token(next_token, &self.tokenizer, &mut output);
-
-        let eos_token = *self.tokenizer.get_vocab(true).get("</s>").unwrap();
-
-        let start_post_prompt = std::time::Instant::now();
-        for index in 0..to_sample {
-            let input = Tensor::new(&[next_token], &device)?.unsqueeze(0)?;
-            let logits = model_weights.forward(&input, prompt_tokens.len() + index)?;
-            let logits = logits.squeeze(0)?;
-            let logits = if self.repeat_penalty == 1. {
-                logits
+            let prompt_tokens = [pre_prompt_tokens, tokens.get_ids()].concat();
+            let to_sample = self.sample_len.saturating_sub(1);
+            let prompt_tokens = if prompt_tokens.len() + to_sample > model::MAX_SEQ_LEN - 10 {
+                let to_remove = prompt_tokens.len() + to_sample + 10 - model::MAX_SEQ_LEN;
+                prompt_tokens[prompt_tokens.len().saturating_sub(to_remove)..].to_vec()
             } else {
-                let start_at = all_tokens.len().saturating_sub(self.repeat_last_n);
-                candle_transformers::utils::apply_repeat_penalty(
-                    &logits,
-                    self.repeat_penalty,
-                    &all_tokens[start_at..],
-                )?
+                prompt_tokens
             };
-            next_token = logits_processor.sample(&logits)?;
-            all_tokens.push(next_token);
-            extract_token(next_token, &self.tokenizer, &mut output);
-            if next_token == eos_token {
-                break;
-            };
-        }
-        let dt = start_post_prompt.elapsed();
-        println!(
-            "\n\n{:4} prompt tokens processed: {:.2} token/s",
-            prompt_tokens.len(),
-            prompt_tokens.len() as f64 / prompt_dt.as_secs_f64(),
-        );
-        println!(
-            "{:4} tokens generated: {:.2} token/s",
-            to_sample,
-            to_sample as f64 / dt.as_secs_f64(),
-        );
+            let mut all_tokens = vec![];
+            let mut logits_processor =
+                LogitsProcessor::new(self.seed, self.temperature, self.top_p);
 
-        let next_pre_prompt_tokens = [prompt_tokens.as_slice(), all_tokens.as_slice()].concat();
-        Ok((output, next_pre_prompt_tokens))
+            let device = Device::Cpu;
+            let start_prompt_processing = std::time::Instant::now();
+            let mut next_token = {
+                let input = Tensor::new(prompt_tokens.as_slice(), &device)?.unsqueeze(0)?;
+                let logits = model_weights.forward(&input, 0)?;
+                let logits = logits.squeeze(0)?;
+                logits_processor.sample(&logits)?
+            };
+            let prompt_dt = start_prompt_processing.elapsed();
+            all_tokens.push(next_token);
+            let mut output = String::new();
+            extract_token(next_token, &self.tokenizer, &mut output);
+
+            let eos_token = *self.tokenizer.get_vocab(true).get("</s>").unwrap();
+
+            let start_post_prompt = std::time::Instant::now();
+            for index in 0..to_sample {
+                let input = Tensor::new(&[next_token], &device)?.unsqueeze(0)?;
+                let logits = model_weights.forward(&input, prompt_tokens.len() + index)?;
+                let logits = logits.squeeze(0)?;
+                let logits = if self.repeat_penalty == 1. {
+                    logits
+                } else {
+                    let start_at = all_tokens.len().saturating_sub(self.repeat_last_n);
+                    candle_transformers::utils::apply_repeat_penalty(
+                        &logits,
+                        self.repeat_penalty,
+                        &all_tokens[start_at..],
+                    )?
+                };
+                next_token = logits_processor.sample(&logits)?;
+                all_tokens.push(next_token);
+                extract_token(next_token, &self.tokenizer, &mut output);
+                if next_token == eos_token {
+                    break;
+                };
+            }
+            let dt = start_post_prompt.elapsed();
+            println!(
+                "\n\n{:4} prompt tokens processed: {:.2} token/s",
+                prompt_tokens.len(),
+                prompt_tokens.len() as f64 / prompt_dt.as_secs_f64(),
+            );
+            println!(
+                "{:4} tokens generated: {:.2} token/s",
+                to_sample,
+                to_sample as f64 / dt.as_secs_f64(),
+            );
+
+            let next_pre_prompt_tokens = [prompt_tokens.as_slice(), all_tokens.as_slice()].concat();
+            Ok((output, next_pre_prompt_tokens))
+        })
     }
 }
 
