@@ -1,12 +1,14 @@
 FROM rust
 
+ENV RUSTFLAGS="-Ctarget-cpu=native"
+
 WORKDIR /app
 
 COPY Cargo.toml Cargo.toml
 
 COPY Cargo.lock Cargo.lock
 
-RUN mkdir src && echo "fn main() {}" > src/main.rs
+RUN mkdir src && echo 'fn main() {panic!("not ready");}' > src/main.rs
 
 RUN cargo build --release --locked
 
