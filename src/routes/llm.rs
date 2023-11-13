@@ -11,8 +11,7 @@ use candle_transformers::generation::LogitsProcessor;
 
 use candle_transformers::models::quantized_llama as model;
 use model::ModelWeights;
-use std::sync::Arc;
-use tokio::sync::Mutex;
+use std::sync::{Arc, Mutex, TryLockError};
 pub struct ModelBuilder {
     sample_len: usize,
     temperature: f64,
@@ -136,7 +135,21 @@ impl Model {
         prompt_str: String,
         pre_prompt_tokens: &Vec<u32>,
     ) -> Result<(String, Vec<u32>), Box<dyn std::error::Error>> {
-        let mut model_weights = self.model_weights.lock().await;
+        let mut model_weights = loop {
+            match self.model_weights.try_lock() {
+                Ok(model_weights) => break model_weights,
+                Err(TryLockError::Poisoned(e)) => {
+                    let guard = e.into_inner();
+                    // waiting for https://github.com/rust-lang/rust/issues/96469
+                    // *guard = build_model_weights()?;
+                    // self.model_weights.clear_poison();
+                    // println!("Note: model_weights mutex was poisoned, will try to rebuild");
+                    break guard;
+                }
+                Err(TryLockError::WouldBlock) => {}
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        };
 
         tokio::task::block_in_place(move || {
             let prompt_str = format!("[INST] {prompt_str} [/INST]");
@@ -272,4 +285,27 @@ mod tests {
         let (output, _) = model.interact(prompt, &pre_prompt_tokens).await.unwrap();
         println!("{output}");
     }
+
+    // waiting for https://github.com/rust-lang/rust/issues/96469
+    // #[tokio::test]
+    // async fn poisoning_rebuild() {
+    //     let model = ModelBuilder::default().build().unwrap();
+    //     let c_model = model.clone();
+
+    //     #[allow(unused_variables, unreachable_code)]
+    //     std::thread::spawn(move || {
+    //         let lock = c_model.model_weights.lock().unwrap();
+    //         panic!();
+    //         drop(lock);
+    //     })
+    //     .join()
+    //     .unwrap_or_default();
+
+    //     assert!(model.model_weights.is_poisoned());
+
+    //     let prompt = "Create a basic Rust program".to_string();
+    //     let pre_prompt_tokens = vec![];
+    //     let (output, _) = model.interact(prompt, &pre_prompt_tokens).await.unwrap();
+    //     println!("{output}");
+    // }
 }
