@@ -115,6 +115,22 @@ async fn process_slack_events(
                     if let Some(text) = event.get("text") {
                         let text = text.as_str().ok_or("text is not a string")?;
                         if let Some(channel) = event.get("channel") {
+                            if PRINT_SLACK_EVENTS {
+                                let user = event.get("user").and_then(|x| x.as_str());
+                                let user = match user {
+                                    Some(x) => get_email_given_slack_user_id(
+                                        x.to_owned(),
+                                        slack_oauth_token.clone(),
+                                    )
+                                    .await
+                                    .unwrap_or(x.to_owned()),
+                                    None => "unknown".to_owned(),
+                                };
+                                println!(
+                                "From user {user} at channel {channel}, received message: {text}"
+                             );
+                            }
+
                             let reqw_client = reqwest::Client::new();
                             let channel = channel.as_str().ok_or("channel is not a string")?;
 
@@ -329,6 +345,30 @@ pub async fn plot_random_stuff(
         println!("Received send plot response {:?}", reqw_response);
     }
     Ok(())
+}
+
+pub async fn get_email_given_slack_user_id(
+    slack_user_id: String,
+    slack_oauth_token: SlackOAuthToken,
+) -> Result<String, AppError> {
+    let reqw_client = reqwest::Client::new();
+    let reqw_response = reqw_client
+        .get(format!(
+            "https://slack.com/api/users.info?user={slack_user_id}"
+        ))
+        .header(AUTHORIZATION, format!("Bearer {}", slack_oauth_token.0))
+        .send()
+        .await?;
+    let body = reqw_response
+        .text()
+        .await
+        .map_err(|e| format!("Failed to read response body: {e}"))?;
+    let slack_user: Value =
+        serde_json::from_str(&body).map_err(|e| format!("Could not parse response body: {e}"))?;
+    Ok(slack_user["user"]["profile"]["email"]
+        .as_str()
+        .map(|x| x.to_owned())
+        .ok_or("Could not find user id in response")?)
 }
 
 pub async fn index() -> Result<impl IntoResponse, AppError> {
