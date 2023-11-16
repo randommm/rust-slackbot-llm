@@ -22,7 +22,7 @@ candle = { version = "0.3.0", package = "candle-core" }
 candle-nn = { version = "0.3.0" }
 candle-transformers = { version = "0.3.0" }
 hf-hub = "0.3.2"
-tokenizers = "0.14.1"
+tokenizers = "0.15"
 
 [profile.dev.package."*"]
 opt-level = 3
