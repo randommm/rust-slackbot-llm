@@ -36,7 +36,7 @@ pub struct Model {
 impl Default for ModelBuilder {
     fn default() -> Self {
         Self {
-            sample_len: 100,
+            sample_len: 1000,
             temperature: 0.8,
             top_p: None,
             seed: 299792458,
@@ -105,7 +105,7 @@ pub fn build_model_weights() -> Result<ModelWeights, Box<dyn std::error::Error>>
     let api = api.model(repo.to_string());
     let model_path = api.get(filename)?;
 
-    let mut file = std::fs::File::open(&model_path)?;
+    let mut file = std::fs::File::open(model_path)?;
     let start = std::time::Instant::now();
 
     let model = {
@@ -152,6 +152,8 @@ impl Model {
         };
 
         tokio::task::block_in_place(move || {
+            thread_priority::set_current_thread_priority(thread_priority::ThreadPriority::Min)
+                .unwrap_or_default();
             let prompt_str = format!("[INST] {prompt_str} [/INST]");
             // print!("{}", &prompt_str);
             let tokens = self

@@ -2453,6 +2453,7 @@ dependencies = [
  "serde_json",
  "sha2",
  "sqlx",
+ "thread-priority",
  "tokenizers",
  "tokio",
  "uuid",
@@ -3088,6 +3089,20 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 2.0.38",
+]
+
+[[package]]
+name = "thread-priority"
+version = "0.15.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1504bc534c1b6db674e4bbd46e1d77462f803fdf042bc237fb2ebebc0f0e3aa5"
+dependencies = [
+ "bitflags 1.3.2",
+ "cfg-if",
+ "libc",
+ "log",
+ "rustversion",
+ "winapi",
 ]
 
 [[package]]
