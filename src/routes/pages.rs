@@ -109,162 +109,153 @@ async fn process_slack_events(
     db_pool: SqlitePool,
     query: &Value,
 ) -> Result<(), AppError> {
-    if let Some(event) = query.get("event") {
-        if event.get("bot_id").is_none() {
-            if let Some(type_) = event.get("type") {
-                let type_ = type_.as_str().ok_or("type is not a string")?;
-                if type_ == "message" || type_ == "app_mention" {
-                    if let Some(text) = event.get("text") {
-                        let text = text.as_str().ok_or("text is not a string")?;
-                        if let Some(channel) = event.get("channel") {
-                            let user = event.get("user").and_then(|x| x.as_str());
-                            let user = match user {
-                                Some(x) => get_email_given_slack_user_id(
-                                    x.to_owned(),
-                                    slack_oauth_token.clone(),
-                                )
-                                .await
-                                .unwrap_or(x.to_owned()),
-                                None => "unknown".to_owned(),
-                            };
-                            print!(
-                                "From user {user} at channel {channel} and type {type_}, received message: {text}. "
-                            );
+    let event = query.get("event").ok_or("event is found on query")?;
 
-                            let text = match Regex::new(r" ?<@.*> ?") {
-                                Ok(pattern) if type_ == "app_mention" => {
-                                    let text = pattern.replace_all(text, " ");
-                                    text.as_ref().trim().to_owned()
-                                }
-                                _ => text.trim().to_owned(),
-                            };
+    // filters out messages from the bot itself
+    // avoid infinite loops of the bot talking to itself
+    if event.get("bot_id").is_some() {
+        return Ok(());
+    }
 
-                            println!("Processed message: {text}.");
+    let type_ = event.get("type").ok_or("type not found on query")?;
+    let type_ = type_.as_str().ok_or("type is not a string")?;
+    if type_ != "message" && type_ != "app_mention" {
+        return Ok(());
+    }
 
-                            let reqw_client = reqwest::Client::new();
-                            let channel = channel.as_str().ok_or("channel is not a string")?;
+    let text = event.get("text").ok_or("text not found on query")?;
+    let text = text.as_str().ok_or("text is not a string")?;
 
-                            let reply_to_user = if text == "delete" || text == "\"delete\"" {
-                                let _ = sqlx::query(
-                                    "DELETE FROM sessions
+    let channel = event.get("channel").ok_or("channel not found on query")?;
+    let channel = channel.as_str().ok_or("channel is not a string")?;
+
+    let user = event.get("user").and_then(|x| x.as_str());
+    let user = match user {
+        Some(x) => get_email_given_slack_user_id(x.to_owned(), slack_oauth_token.clone())
+            .await
+            .unwrap_or(x.to_owned()),
+        None => "unknown".to_owned(),
+    };
+    print!("From user {user} at channel {channel} and type {type_}, received message: {text}. ");
+
+    let text = match Regex::new(r" ?<@.*> ?") {
+        Ok(pattern) if type_ == "app_mention" => {
+            let text = pattern.replace_all(text, " ");
+            text.as_ref().trim().to_owned()
+        }
+        _ => text.trim().to_owned(),
+    };
+
+    println!("Processed message: {text}.");
+
+    let reqw_client = reqwest::Client::new();
+
+    let reply_to_user = if text == "delete" || text == "\"delete\"" {
+        let _ = sqlx::query(
+            "DELETE FROM sessions
                                     WHERE channel = $1",
-                                )
-                                .bind(channel)
-                                .execute(&db_pool)
-                                .await;
+        )
+        .bind(channel)
+        .execute(&db_pool)
+        .await;
 
-                                "Ok, the LLM section was deleted. A new message will start a fresh LLM section.".to_owned()
-                            } else if text == "plot" || text == "\"plot\"" {
-                                return plot_random_stuff(
-                                    channel.to_owned(),
-                                    slack_oauth_token.clone(),
-                                )
-                                .await;
-                            } else {
-                                // select that checks if a state exists
-                                let query: Result<(Vec<u8>,), _> = sqlx::query_as(
-                                    r#"SELECT model_state
+        "Ok, the LLM section was deleted. A new message will start a fresh LLM section.".to_owned()
+    } else if text == "plot" || text == "\"plot\"" {
+        return plot_random_stuff(channel.to_owned(), slack_oauth_token.clone()).await;
+    } else {
+        // select that checks if a state exists
+        let query: Result<(Vec<u8>,), _> = sqlx::query_as(
+            r#"SELECT model_state
                                         FROM sessions WHERE channel = $1;"#,
-                                )
-                                .bind(channel)
-                                .fetch_one(&db_pool)
-                                .await;
+        )
+        .bind(channel)
+        .fetch_one(&db_pool)
+        .await;
 
-                                let pre_prompt_tokens = if let Ok(query) = query {
-                                    let (model_state,) = query;
-                                    let deserialized: Result<_, _> =
-                                        bincode::deserialize(&model_state[..]);
-                                    deserialized.unwrap_or_default()
-                                } else {
-                                    if PRINT_SLACK_EVENTS {
-                                        println!("Starting new section");
-                                    }
-                                    let timestamp = SystemTime::now()
-                                        .duration_since(SystemTime::UNIX_EPOCH)
-                                        .map_err(|e| format!("Error: {:?}", e))?
-                                        .as_secs()
-                                        as i64;
-                                    sqlx::query(
-                                        "INSERT OR IGNORE INTO sessions
+        let pre_prompt_tokens = if let Ok(query) = query {
+            let (model_state,) = query;
+            let deserialized: Result<_, _> = bincode::deserialize(&model_state[..]);
+            deserialized.unwrap_or_default()
+        } else {
+            if PRINT_SLACK_EVENTS {
+                println!("Starting new section");
+            }
+            let timestamp = SystemTime::now()
+                .duration_since(SystemTime::UNIX_EPOCH)
+                .map_err(|e| format!("Error: {:?}", e))?
+                .as_secs() as i64;
+            sqlx::query(
+                "INSERT OR IGNORE INTO sessions
                                         (channel, created_at, updated_at)
                                         VALUES ($1, $2, $3);",
-                                    )
-                                    .bind(channel)
-                                    .bind(timestamp)
-                                    .bind(timestamp)
-                                    .execute(&db_pool)
-                                    .await?;
-                                    Default::default()
-                                };
+            )
+            .bind(channel)
+            .bind(timestamp)
+            .bind(timestamp)
+            .execute(&db_pool)
+            .await?;
+            Default::default()
+        };
 
-                                let form = multipart::Form::new()
-                                    .text("text", "Running the LLM...")
-                                    .text("channel", channel.to_owned());
-                                let _ = reqw_client
-                                    .post("https://slack.com/api/chat.postMessage")
-                                    .header(
-                                        AUTHORIZATION,
-                                        format!("Bearer {}", slack_oauth_token.0),
-                                    )
-                                    .multipart(form)
-                                    .send()
-                                    .await;
+        let form = multipart::Form::new()
+            .text("text", "Running the LLM...")
+            .text("channel", channel.to_owned());
+        let _ = reqw_client
+            .post("https://slack.com/api/chat.postMessage")
+            .header(AUTHORIZATION, format!("Bearer {}", slack_oauth_token.0))
+            .multipart(form)
+            .send()
+            .await;
 
-                                let (oneshot_tx, oneshot_rx) = oneshot::channel();
-                                llm_model_sender
-                                    .send((text, pre_prompt_tokens, oneshot_tx))
-                                    .unwrap();
-                                let (generated_text, next_pre_prompt_tokens) =
-                                    oneshot_rx.await.unwrap();
+        let (oneshot_tx, oneshot_rx) = oneshot::channel();
+        llm_model_sender
+            .send((text, pre_prompt_tokens, oneshot_tx))
+            .unwrap();
+        let (generated_text, next_pre_prompt_tokens) = oneshot_rx.await.unwrap();
 
-                                if PRINT_SLACK_EVENTS {
-                                    println!("Saving model state");
-                                }
-                                let encoded: Vec<u8> = bincode::serialize(&next_pre_prompt_tokens)
-                                    .map_err(|e| format!("Failed to encode model {e}"))?;
-                                let timestamp = SystemTime::now()
-                                    .duration_since(SystemTime::UNIX_EPOCH)
-                                    .map_err(|e| format!("Error: {:?}", e))?
-                                    .as_secs()
-                                    as i64;
-                                sqlx::query(
-                                    "INSERT INTO sessions
+        if PRINT_SLACK_EVENTS {
+            println!("Saving model state");
+        }
+        let encoded: Vec<u8> = bincode::serialize(&next_pre_prompt_tokens)
+            .map_err(|e| format!("Failed to encode model {e}"))?;
+        let timestamp = SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .map_err(|e| format!("Error: {:?}", e))?
+            .as_secs() as i64;
+        sqlx::query(
+            "INSERT INTO sessions
                                         (channel, created_at, updated_at, model_state)
                                         VALUES ($1, $2, $3, $4)
                                         ON CONFLICT (channel)
                                         DO UPDATE SET
                                         model_state = EXCLUDED.model_state,
                                         updated_at = EXCLUDED.updated_at;",
-                                )
-                                .bind(channel)
-                                .bind(timestamp)
-                                .bind(timestamp)
-                                .bind(encoded)
-                                .execute(&db_pool)
-                                .await?;
-                                "Reply from the LLM:\n".to_owned()
-                                    + generated_text.as_str()
-                                    + "\nNote: to delete the LLM chat section, send \"delete\""
-                            };
+        )
+        .bind(channel)
+        .bind(timestamp)
+        .bind(timestamp)
+        .bind(encoded)
+        .execute(&db_pool)
+        .await?;
+        "Reply from the LLM:\n".to_owned()
+            + generated_text.as_str()
+            + "\nNote: to delete the LLM chat section, send \"delete\""
+    };
 
-                            let form = multipart::Form::new()
-                                .text("text", reply_to_user)
-                                .text("channel", channel.to_owned());
-                            let reqw_response = reqw_client
-                                .post("https://slack.com/api/chat.postMessage")
-                                .header(AUTHORIZATION, format!("Bearer {}", slack_oauth_token.0))
-                                .multipart(form)
-                                .send()
-                                .await?;
-                            reqw_response.text().await.map_err(|e| {
-                                format!("Failed to read reqwest response body: {e}")
-                            })?;
-                        }
-                    }
-                }
-            }
-        }
-    }
+    let form = multipart::Form::new()
+        .text("text", reply_to_user)
+        .text("channel", channel.to_owned());
+    let reqw_response = reqw_client
+        .post("https://slack.com/api/chat.postMessage")
+        .header(AUTHORIZATION, format!("Bearer {}", slack_oauth_token.0))
+        .multipart(form)
+        .send()
+        .await?;
+    reqw_response
+        .text()
+        .await
+        .map_err(|e| format!("Failed to read reqwest response body: {e}"))?;
+
     Ok(())
 }
 
