@@ -2448,6 +2448,7 @@ dependencies = [
  "image",
  "plotters",
  "plotters-bitmap",
+ "regex",
  "reqwest",
  "serde",
  "serde_json",

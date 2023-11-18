@@ -6,6 +6,7 @@ use axum::{
     Json,
 };
 use hmac::{Hmac, Mac};
+use regex::Regex;
 use reqwest::{header::AUTHORIZATION, multipart};
 use serde_json::Value;
 use sha2::Sha256;
@@ -112,25 +113,33 @@ async fn process_slack_events(
         if event.get("bot_id").is_none() {
             if let Some(type_) = event.get("type") {
                 let type_ = type_.as_str().ok_or("type is not a string")?;
-                if type_ == "message" {
+                if type_ == "message" || type_ == "app_mention" {
                     if let Some(text) = event.get("text") {
                         let text = text.as_str().ok_or("text is not a string")?;
                         if let Some(channel) = event.get("channel") {
-                            if PRINT_SLACK_EVENTS {
-                                let user = event.get("user").and_then(|x| x.as_str());
-                                let user = match user {
-                                    Some(x) => get_email_given_slack_user_id(
-                                        x.to_owned(),
-                                        slack_oauth_token.clone(),
-                                    )
-                                    .await
-                                    .unwrap_or(x.to_owned()),
-                                    None => "unknown".to_owned(),
-                                };
-                                println!(
-                                "From user {user} at channel {channel}, received message: {text}"
-                             );
-                            }
+                            let user = event.get("user").and_then(|x| x.as_str());
+                            let user = match user {
+                                Some(x) => get_email_given_slack_user_id(
+                                    x.to_owned(),
+                                    slack_oauth_token.clone(),
+                                )
+                                .await
+                                .unwrap_or(x.to_owned()),
+                                None => "unknown".to_owned(),
+                            };
+                            print!(
+                                "From user {user} at channel {channel} and type {type_}, received message: {text}. "
+                            );
+
+                            let text = match Regex::new(r" ?<@.*> ?") {
+                                Ok(pattern) if type_ == "app_mention" => {
+                                    let text = pattern.replace_all(text, " ");
+                                    text.as_ref().trim().to_owned()
+                                }
+                                _ => text.trim().to_owned(),
+                            };
+
+                            println!("Processed message: {text}.");
 
                             let reqw_client = reqwest::Client::new();
                             let channel = channel.as_str().ok_or("channel is not a string")?;
@@ -203,7 +212,7 @@ async fn process_slack_events(
 
                                 let (oneshot_tx, oneshot_rx) = oneshot::channel();
                                 llm_model_sender
-                                    .send((text.to_owned(), pre_prompt_tokens, oneshot_tx))
+                                    .send((text, pre_prompt_tokens, oneshot_tx))
                                     .unwrap();
                                 let (generated_text, next_pre_prompt_tokens) =
                                     oneshot_rx.await.unwrap();
