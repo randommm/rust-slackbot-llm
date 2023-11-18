@@ -98,7 +98,7 @@ pub fn build_model_weights() -> Result<ModelWeights, Box<dyn std::error::Error>>
     //let repo = "TheBloke/Mistral-7B-v0.1-GGUF";
     let repo = "TheBloke/Mistral-7B-Instruct-v0.1-GGUF";
 
-    // let filename = h"mistral-7b-instruct-v0.1.Q4_K_S.gguf";
+    // let filename = "mistral-7b-instruct-v0.1.Q5_K_M.gguf";
     let filename = "mistral-7b-instruct-v0.1.Q2_K.gguf";
 
     let api = hf_hub::api::sync::Api::new()?;
@@ -162,7 +162,7 @@ impl Model {
                 .map_err(|e| format!("Error encoding tokenizer: {e}"))?;
 
             let prompt_tokens = [pre_prompt_tokens, tokens.get_ids()].concat();
-            let to_sample = self.sample_len.saturating_sub(1);
+            let mut to_sample = self.sample_len.saturating_sub(1);
             let prompt_tokens = if prompt_tokens.len() + to_sample > model::MAX_SEQ_LEN - 10 {
                 let to_remove = prompt_tokens.len() + to_sample + 10 - model::MAX_SEQ_LEN;
                 prompt_tokens[prompt_tokens.len().saturating_sub(to_remove)..].to_vec()
@@ -207,6 +207,7 @@ impl Model {
                 all_tokens.push(next_token);
                 extract_token(next_token, &self.tokenizer, &mut output);
                 if next_token == eos_token {
+                    to_sample = index + 1;
                     break;
                 };
             }
