@@ -1,4 +1,4 @@
-use super::{llm::Model, AppError, SlackOAuthToken, SlackSigningSecret};
+use super::{AppError, LLMSender, SlackOAuthToken, SlackSigningSecret};
 use axum::{
     extract::State,
     http::{HeaderMap, StatusCode},
@@ -11,6 +11,7 @@ use serde_json::Value;
 use sha2::Sha256;
 use sqlx::SqlitePool;
 use std::time::SystemTime;
+use tokio::sync::oneshot;
 
 const PRINT_SLACK_EVENTS: bool = false;
 
@@ -18,7 +19,7 @@ pub async fn get_slack_events(
     State(db_pool): State<SqlitePool>,
     State(slack_signing_secret): State<SlackSigningSecret>,
     State(slack_oauth_token): State<SlackOAuthToken>,
-    State(model): State<Model>,
+    State(llm_model_sender): State<LLMSender>,
     headers: HeaderMap,
     body: String,
 ) -> Result<impl IntoResponse, AppError> {
@@ -75,7 +76,7 @@ pub async fn get_slack_events(
     }
     tokio::spawn(try_process_slack_events(
         slack_oauth_token,
-        model,
+        llm_model_sender,
         db_pool,
         query,
     ));
@@ -85,11 +86,11 @@ pub async fn get_slack_events(
 
 pub async fn try_process_slack_events(
     slack_oauth_token: SlackOAuthToken,
-    model: Model,
+    llm_model_sender: LLMSender,
     db_pool: SqlitePool,
     query: Value,
 ) -> Result<(), AppError> {
-    let value = process_slack_events(slack_oauth_token, model, db_pool, &query).await;
+    let value = process_slack_events(slack_oauth_token, llm_model_sender, db_pool, &query).await;
 
     if let Err(ref value) = value {
         println!(
@@ -103,7 +104,7 @@ pub async fn try_process_slack_events(
 
 async fn process_slack_events(
     slack_oauth_token: SlackOAuthToken,
-    model: Model,
+    llm_model_sender: LLMSender,
     db_pool: SqlitePool,
     query: &Value,
 ) -> Result<(), AppError> {
@@ -200,10 +201,12 @@ async fn process_slack_events(
                                     .send()
                                     .await;
 
-                                let (generated_text, next_pre_prompt_tokens) = model
-                                    .interact(text.to_owned(), &pre_prompt_tokens)
-                                    .await
-                                    .unwrap_or_default();
+                                let (oneshot_tx, oneshot_rx) = oneshot::channel();
+                                llm_model_sender
+                                    .send((text.to_owned(), pre_prompt_tokens, oneshot_tx))
+                                    .unwrap();
+                                let (generated_text, next_pre_prompt_tokens) =
+                                    oneshot_rx.await.unwrap();
 
                                 if PRINT_SLACK_EVENTS {
                                     println!("Saving model state");
