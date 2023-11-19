@@ -10,7 +10,7 @@ use super::{LLMReceiver, LLMSender};
 use candle::quantized::gguf_file;
 use candle::{Device, Tensor};
 use candle_transformers::generation::LogitsProcessor;
-use std::sync::mpsc::channel;
+use crossbeam_channel::unbounded;
 use std::thread;
 
 use candle_transformers::models::quantized_llama as model;
@@ -99,7 +99,7 @@ impl ModelBuilder {
         let (tx, rx) = if let Some(llm_receiver) = self.llm_receiver {
             (None, llm_receiver)
         } else {
-            let (tx, rx) = channel();
+            let (tx, rx) = unbounded();
             (Some(tx), rx)
         };
 

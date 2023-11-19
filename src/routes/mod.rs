@@ -6,10 +6,10 @@ use axum::{
     routing::{get, post},
     Router,
 };
+use crossbeam_channel::{Receiver, Sender};
 use error_handling::AppError;
 use llm::ModelBuilder;
 use sqlx::SqlitePool;
-use std::sync::mpsc::{Receiver, Sender};
 use tokio::sync::oneshot::Sender as OneShotSender;
 
 type LLMSender = Sender<(String, Vec<u32>, OneShotSender<(String, Vec<u32>)>)>;
