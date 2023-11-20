@@ -1,4 +1,4 @@
-use super::{AppError, LLMSender, SlackOAuthToken, SlackSigningSecret};
+use super::{AppError, SlackOAuthToken, SlackSigningSecret};
 use axum::{
     extract::State,
     http::{HeaderMap, StatusCode},
@@ -12,7 +12,6 @@ use serde_json::Value;
 use sha2::Sha256;
 use sqlx::SqlitePool;
 use std::time::SystemTime;
-use tokio::sync::oneshot;
 
 const PRINT_SLACK_EVENTS: bool = false;
 
@@ -20,7 +19,6 @@ pub async fn get_slack_events(
     State(db_pool): State<SqlitePool>,
     State(slack_signing_secret): State<SlackSigningSecret>,
     State(slack_oauth_token): State<SlackOAuthToken>,
-    State(llm_model_sender): State<LLMSender>,
     headers: HeaderMap,
     body: String,
 ) -> Result<impl IntoResponse, AppError> {
@@ -75,23 +73,17 @@ pub async fn get_slack_events(
     if let Some(challenge) = query.get("challenge").and_then(|x| x.as_str()) {
         api_response["challenge"] = Value::String(challenge.to_owned());
     }
-    tokio::spawn(try_process_slack_events(
-        slack_oauth_token,
-        llm_model_sender,
-        db_pool,
-        query,
-    ));
+    tokio::spawn(try_process_slack_events(slack_oauth_token, db_pool, query));
 
     Ok(Json(api_response))
 }
 
 pub async fn try_process_slack_events(
     slack_oauth_token: SlackOAuthToken,
-    llm_model_sender: LLMSender,
     db_pool: SqlitePool,
     query: Value,
 ) -> Result<(), AppError> {
-    let value = process_slack_events(slack_oauth_token, llm_model_sender, db_pool, &query).await;
+    let value = process_slack_events(slack_oauth_token, db_pool, &query).await;
 
     if let Err(ref value) = value {
         println!(
@@ -105,7 +97,6 @@ pub async fn try_process_slack_events(
 
 async fn process_slack_events(
     slack_oauth_token: SlackOAuthToken,
-    llm_model_sender: LLMSender,
     db_pool: SqlitePool,
     query: &Value,
 ) -> Result<(), AppError> {
@@ -155,87 +146,37 @@ async fn process_slack_events(
             .bind(channel)
             .execute(&db_pool)
             .await;
+        let _ = sqlx::query("DELETE FROM queue WHERE channel = $1")
+            .bind(channel)
+            .execute(&db_pool)
+            .await;
 
         "Ok, the LLM section was deleted. A new message will start a fresh LLM section.".to_owned()
     } else if text == "plot" || text == "\"plot\"" {
         return plot_random_stuff(channel.to_owned(), slack_oauth_token.clone()).await;
     } else {
-        let mut initial_message = "Running the LLM ".to_owned();
-        // select that checks if a state exists
-        let query: Result<(Vec<u8>,), _> =
-            sqlx::query_as(r#"SELECT model_state FROM sessions WHERE channel = $1;"#)
-                .bind(channel)
-                .fetch_one(&db_pool)
-                .await;
-
-        let pre_prompt_tokens = if let Ok(query) = query {
-            initial_message.push_str("reusing section. ");
-            let (model_state,) = query;
-            let deserialized: Result<_, _> = bincode::deserialize(&model_state[..]);
-            deserialized.unwrap_or_default()
-        } else {
-            initial_message.push_str("with new section. ");
-            let timestamp = SystemTime::now()
-                .duration_since(SystemTime::UNIX_EPOCH)
-                .map_err(|e| format!("Error: {:?}", e))?
-                .as_secs() as i64;
-            sqlx::query( "INSERT OR IGNORE INTO sessions (channel, created_at, updated_at) VALUES ($1, $2, $3);")
-            .bind(channel)
-            .bind(timestamp)
-            .bind(timestamp)
-            .execute(&db_pool)
-            .await?;
-            Default::default()
-        };
-
-        initial_message
-            .push_str(format!("Current queue size: {}.", llm_model_sender.len()).as_str());
-        initial_message.push_str("\nNote: to delete the LLM chat section, send \"delete\".");
-
-        let form = multipart::Form::new()
-            .text("text", initial_message)
-            .text("channel", channel.to_owned());
-        tokio::spawn(
-            reqw_client
-                .post("https://slack.com/api/chat.postMessage")
-                .header(AUTHORIZATION, format!("Bearer {}", slack_oauth_token.0))
-                .multipart(form)
-                .send(),
-        );
-
-        let (oneshot_tx, oneshot_rx) = oneshot::channel();
-        llm_model_sender
-            .send((text, pre_prompt_tokens, oneshot_tx))
-            .unwrap();
-        let (generated_text, next_pre_prompt_tokens) = oneshot_rx
-            .await
-            .map_err(|e| format!("One-shot channel error: {e}"))?;
-
-        if PRINT_SLACK_EVENTS {
-            println!("Saving model state");
-        }
-        let encoded: Vec<u8> = bincode::serialize(&next_pre_prompt_tokens)
-            .map_err(|e| format!("Failed to encode model {e}"))?;
-        let timestamp = SystemTime::now()
+        let created_at = SystemTime::now()
             .duration_since(SystemTime::UNIX_EPOCH)
             .map_err(|e| format!("Error: {:?}", e))?
             .as_secs() as i64;
         sqlx::query(
-            "INSERT INTO sessions
-                (channel, created_at, updated_at, model_state)
-                VALUES ($1, $2, $3, $4)
-                ON CONFLICT (channel)
-                DO UPDATE SET
-                model_state = EXCLUDED.model_state,
-                updated_at = EXCLUDED.updated_at;",
+            "INSERT INTO queue (text, channel, created_at, leased_at) VALUES ($1, $2, $3, 0);",
         )
+        .bind(text)
         .bind(channel)
-        .bind(timestamp)
-        .bind(timestamp)
-        .bind(encoded)
+        .bind(created_at)
         .execute(&db_pool)
         .await?;
-        "Reply from the LLM:\n".to_owned() + &generated_text[1..generated_text.len() - 4]
+
+        let mut initial_message = "Placed on message on the LLM queue.".to_owned();
+        let _ = sqlx::query_as("SELECT COUNT(*) FROM queue")
+            .fetch_one(&db_pool)
+            .await
+            .map(|(row,): (i64,)| {
+                initial_message.push_str(format!(" Current queue size: {}.", row).as_str())
+            });
+        initial_message.push_str("\nNote: to delete the LLM chat section, send \"delete\".");
+        initial_message
     };
 
     let form = multipart::Form::new()
