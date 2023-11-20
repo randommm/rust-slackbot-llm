@@ -169,12 +169,12 @@ async fn process_slack_events(
                 .await;
 
         let pre_prompt_tokens = if let Ok(query) = query {
-            initial_message.push_str("with new section. ");
+            initial_message.push_str("reusing section. ");
             let (model_state,) = query;
             let deserialized: Result<_, _> = bincode::deserialize(&model_state[..]);
             deserialized.unwrap_or_default()
         } else {
-            initial_message.push_str("reusing section. ");
+            initial_message.push_str("with new section. ");
             let timestamp = SystemTime::now()
                 .duration_since(SystemTime::UNIX_EPOCH)
                 .map_err(|e| format!("Error: {:?}", e))?
