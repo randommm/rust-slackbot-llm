@@ -129,6 +129,15 @@ async fn process_slack_events(
     };
     print!("From user {user} at channel {channel} and type {type_}, received message: {text}. ");
 
+    let thread_ts = event.get("thread_ts");
+    let thread_ts = match thread_ts {
+        Some(x) => x,
+        None => event
+            .get("event_ts")
+            .ok_or("neither thread_ts nor event_ts found")?,
+    };
+    let thread_ts = thread_ts.as_str().ok_or("thread_ts is not a string")?;
+
     let text = match Regex::new(r" ?<@.*> ?") {
         Ok(pattern) if type_ == "app_mention" => {
             let text = pattern.replace_all(text, " ");
@@ -142,28 +151,37 @@ async fn process_slack_events(
     let reqw_client = reqwest::Client::new();
 
     let reply_to_user = if text == "delete" || text == "\"delete\"" {
-        let _ = sqlx::query("DELETE FROM sessions WHERE channel = $1")
+        let _ = sqlx::query("DELETE FROM sessions WHERE channel = $1 AND thread_ts = $2")
             .bind(channel)
+            .bind(thread_ts)
             .execute(&db_pool)
             .await;
-        let _ = sqlx::query("DELETE FROM queue WHERE channel = $1")
+        let _ = sqlx::query("DELETE FROM queue WHERE channel = $1 AND thread_ts = $2")
             .bind(channel)
+            .bind(thread_ts)
             .execute(&db_pool)
             .await;
 
         "Ok, the LLM section was deleted. A new message will start a fresh LLM section.".to_owned()
     } else if text == "plot" || text == "\"plot\"" {
-        return plot_random_stuff(channel.to_owned(), slack_oauth_token.clone()).await;
+        return plot_random_stuff(
+            channel.to_owned(),
+            thread_ts.to_owned(),
+            slack_oauth_token.clone(),
+        )
+        .await;
     } else {
         let created_at = SystemTime::now()
             .duration_since(SystemTime::UNIX_EPOCH)
             .map_err(|e| format!("Error: {:?}", e))?
             .as_secs() as i64;
         sqlx::query(
-            "INSERT INTO queue (text, channel, created_at, leased_at) VALUES ($1, $2, $3, 0);",
+            "INSERT INTO queue (text, channel, thread_ts, created_at, leased_at)
+            VALUES ($1, $2, $3, $4, 0);",
         )
         .bind(text)
         .bind(channel)
+        .bind(thread_ts)
         .bind(created_at)
         .execute(&db_pool)
         .await?;
@@ -181,7 +199,9 @@ async fn process_slack_events(
 
     let form = multipart::Form::new()
         .text("text", reply_to_user)
-        .text("channel", channel.to_owned());
+        .text("channel", channel.to_owned())
+        .text("thread_ts", thread_ts.to_owned());
+
     let reqw_response = reqw_client
         .post("https://slack.com/api/chat.postMessage")
         .header(AUTHORIZATION, format!("Bearer {}", slack_oauth_token.0))
@@ -198,6 +218,7 @@ async fn process_slack_events(
 
 pub async fn plot_random_stuff(
     channel: String,
+    thread_ts: String,
     slack_oauth_token: SlackOAuthToken,
 ) -> Result<(), AppError> {
     let mut buffer_ = vec![0; 640 * 480 * 3];
@@ -268,7 +289,8 @@ pub async fn plot_random_stuff(
     let form = multipart::Form::new()
         .text("channels", channel)
         .text("title", "A plot for ya")
-        .part("file", part);
+        .part("file", part)
+        .text("thread_ts", thread_ts);
     let reqw_response = reqw_client
         .post("https://slack.com/api/files.upload")
         .header(AUTHORIZATION, format!("Bearer {}", slack_oauth_token.0))

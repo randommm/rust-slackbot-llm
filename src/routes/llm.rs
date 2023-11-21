@@ -77,7 +77,7 @@ pub async fn start_llm_worker(db_pool: SqlitePool, slack_oauth_token: SlackOAuth
             repeat_last_n
         );
         loop {
-            thread::scope(|s| {
+            let res = thread::scope(|s| {
                 s.spawn(|| {
                     thread_priority::set_current_thread_priority(
                         thread_priority::ThreadPriority::Min,
@@ -108,15 +108,16 @@ pub async fn start_llm_worker(db_pool: SqlitePool, slack_oauth_token: SlackOAuth
 
                     loop {
                         // async task to select a task from the queue
-                        let (task_id, prompt_str, channel) = async_handle.block_on(async {
-                            get_next_task(&db_pool)
-                                .await
-                                .map_err(|e| format!("Failed to get next task from queue: {e}"))
-                        })?;
+                        let (task_id, prompt_str, channel, thread_ts) =
+                            async_handle.block_on(async {
+                                get_next_task(&db_pool)
+                                    .await
+                                    .map_err(|e| format!("Failed to get next task from queue: {e}"))
+                            })?;
 
                         // async task to get the state if it exists
                         let pre_prompt_tokens = async_handle.block_on(async {
-                            get_session_state(&db_pool, &channel, &slack_oauth_token)
+                            get_session_state(&db_pool, &channel, &thread_ts, &slack_oauth_token)
                                 .await
                                 .map_err(|e| format!("Failed to get session state: {e}"))
                         })?;
@@ -201,55 +202,74 @@ pub async fn start_llm_worker(db_pool: SqlitePool, slack_oauth_token: SlackOAuth
                         let encoded: Vec<u8> = bincode::serialize(&next_pre_prompt_tokens)
                             .map_err(|e| format!("Failed to encode model {e}"))?;
 
-                        let _ = async_handle.block_on(async {
-                            let now = SystemTime::now()
-                                .duration_since(SystemTime::UNIX_EPOCH)
-                                .map_err(|e| format!("Error: {:?}", e))?
-                                .as_secs() as i64;
-                            sqlx::query("DELETE FROM queue WHERE id = $1;")
-                                .bind(task_id)
-                                .execute(&db_pool)
-                                .await?;
-                            sqlx::query(
-                                "INSERT INTO sessions
-                                    (channel, created_at, updated_at, model_state)
-                                    VALUES ($1, $2, $3, $4)
-                                    ON CONFLICT (channel)
+                        async_handle
+                            .block_on(async {
+                                let now = SystemTime::now()
+                                    .duration_since(SystemTime::UNIX_EPOCH)
+                                    .map_err(|e| format!("Error: {:?}", e))?
+                                    .as_secs() as i64;
+                                sqlx::query("DELETE FROM queue WHERE id = $1;")
+                                    .bind(task_id)
+                                    .execute(&db_pool)
+                                    .await?;
+                                sqlx::query(
+                                    "INSERT INTO sessions
+                                    (channel, thread_ts, created_at, updated_at, model_state)
+                                    VALUES ($1, $2, $3, $4, $5)
+                                    ON CONFLICT (channel, thread_ts)
                                     DO UPDATE SET
                                     model_state = EXCLUDED.model_state,
                                     updated_at = EXCLUDED.updated_at;",
-                            )
-                            .bind(&channel)
-                            .bind(now)
-                            .bind(now)
-                            .bind(encoded)
-                            .execute(&db_pool)
-                            .await?;
-
-                            let reply_to_user = "Reply from the LLM:\n".to_owned()
-                                + &generated_text[1..generated_text.len() - 4];
-
-                            let form = multipart::Form::new()
-                                .text("text", reply_to_user)
-                                .text("channel", channel.to_owned());
-
-                            let reqw_response = reqwest::Client::new()
-                                .post("https://slack.com/api/chat.postMessage")
-                                .header(AUTHORIZATION, format!("Bearer {}", slack_oauth_token.0))
-                                .multipart(form)
-                                .send()
+                                )
+                                .bind(&channel)
+                                .bind(&thread_ts)
+                                .bind(now)
+                                .bind(now)
+                                .bind(encoded)
+                                .execute(&db_pool)
                                 .await?;
-                            reqw_response.text().await.map_err(|e| {
-                                format!("Failed to read reqwest response body: {e}")
-                            })?;
-                            Ok::<(), Box<dyn std::error::Error + Send + Sync>>(())
-                        });
+                                Ok::<(), Box<dyn std::error::Error + Send + Sync>>(())
+                            })
+                            .unwrap_or_else(|e| {
+                                println!("Failed to save model state:\n{e}");
+                            });
+
+                        async_handle
+                            .block_on(async {
+                                let reply_to_user = "Reply from the LLM:\n".to_owned()
+                                    + &generated_text[1..generated_text.len() - 4];
+
+                                let form = multipart::Form::new()
+                                    .text("text", reply_to_user)
+                                    .text("channel", channel.to_owned())
+                                    .text("thread_ts", thread_ts.clone());
+
+                                let reqw_response = reqwest::Client::new()
+                                    .post("https://slack.com/api/chat.postMessage")
+                                    .header(
+                                        AUTHORIZATION,
+                                        format!("Bearer {}", slack_oauth_token.0),
+                                    )
+                                    .multipart(form)
+                                    .send()
+                                    .await?;
+                                reqw_response.text().await.map_err(|e| {
+                                    format!("Failed to read reqwest response body: {e}")
+                                })?;
+                                Ok::<(), Box<dyn std::error::Error + Send + Sync>>(())
+                            })
+                            .unwrap_or_else(|e| {
+                                println!("Failed to send user message:\n{e}");
+                            });
                     }
 
                     #[allow(unreachable_code)]
                     Ok::<(), Box<dyn std::error::Error + Send + Sync>>(())
-                });
+                })
+                .join()
             });
+            println!("LLM worker thread exited with message: {res:?}, restarting in 5 seconds");
+            thread::sleep(std::time::Duration::from_secs(5));
         }
     });
 }
@@ -294,8 +314,8 @@ fn format_size(size_in_bytes: usize) -> String {
 
 async fn get_next_task(
     db_pool: &SqlitePool,
-) -> Result<(i64, String, String), Box<dyn std::error::Error + Send + Sync>> {
-    let (task_id, prompt_str, channel) = loop {
+) -> Result<(i64, String, String, String), Box<dyn std::error::Error + Send + Sync>> {
+    let (task_id, prompt_str, channel, thread_ts) = loop {
         let now = SystemTime::now()
             .duration_since(SystemTime::UNIX_EPOCH)
             .map_err(|e| format!("Error: {:?}", e))?
@@ -303,7 +323,7 @@ async fn get_next_task(
         let mut tx = db_pool.begin().await?;
         match sqlx::query_as(
             "
-        SELECT id,text,channel FROM queue
+        SELECT id,text,channel,thread_ts FROM queue
         WHERE leased_at <= $1
         ORDER BY created_at ASC
         LIMIT 0,1
@@ -314,7 +334,7 @@ async fn get_next_task(
         .await
         {
             Ok(res) => {
-                let (task_id, prompt_str, channel): (i64, String, String) = res;
+                let (task_id, prompt_str, channel, thread_ts) = res;
 
                 if sqlx::query(
                     "
@@ -329,7 +349,7 @@ async fn get_next_task(
                 .is_ok()
                     && tx.commit().await.is_ok()
                 {
-                    break (task_id, prompt_str, channel);
+                    break (task_id, prompt_str, channel, thread_ts);
                 }
             }
             Err(_) => {
@@ -338,24 +358,27 @@ async fn get_next_task(
             }
         }
     };
-    Ok((task_id, prompt_str, channel))
+    Ok((task_id, prompt_str, channel, thread_ts))
 }
 
 async fn get_session_state(
     db_pool: &SqlitePool,
     channel: &str,
+    thread_ts: &str,
     slack_oauth_token: &SlackOAuthToken,
 ) -> Result<Vec<u32>, Box<dyn std::error::Error + Send + Sync>> {
     let mut initial_message = "Running LLM ".to_owned();
-    let query: Result<(Vec<u8>,), _> =
-        sqlx::query_as(r#"SELECT model_state FROM sessions WHERE channel = $1;"#)
-            .bind(channel)
-            .fetch_one(db_pool)
-            .await;
+    let query: Result<(Vec<u8>,), _> = sqlx::query_as(
+        r#"SELECT model_state FROM sessions WHERE channel = $1 AND thread_ts = $2;"#,
+    )
+    .bind(channel)
+    .bind(thread_ts)
+    .fetch_one(db_pool)
+    .await;
     let pre_prompt_tokens = if let Ok(query) = query {
         initial_message.push_str("reusing section. ");
         let (model_state,) = query;
-        let deserialized: Result<Vec<u32>, _> = bincode::deserialize(&model_state[..]);
+        let deserialized = bincode::deserialize(&model_state[..]);
         deserialized.unwrap_or_default()
     } else {
         initial_message.push_str("with new section. ");
@@ -365,9 +388,11 @@ async fn get_session_state(
             .as_secs() as i64;
         sqlx::query(
             r#"INSERT OR IGNORE INTO
-       sessions (channel, created_at, updated_at) VALUES ($1, $2, $3);"#,
+            sessions (channel, thread_ts, created_at, updated_at)
+            VALUES ($1, $2, $3, $4);"#,
         )
         .bind(channel)
+        .bind(thread_ts)
         .bind(timestamp)
         .bind(timestamp)
         .execute(db_pool)
@@ -378,7 +403,8 @@ async fn get_session_state(
     let reqw_client = reqwest::Client::new();
     let form = multipart::Form::new()
         .text("text", initial_message)
-        .text("channel", channel.to_owned());
+        .text("channel", channel.to_owned())
+        .text("thread_ts", thread_ts.to_owned());
     tokio::spawn(
         reqw_client
             .post("https://slack.com/api/chat.postMessage")
