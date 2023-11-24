@@ -1,6 +1,6 @@
 mod error_handling;
-mod llm;
 mod pages;
+use super::llm::start_llm_worker;
 use axum::{
     extract::FromRef,
     routing::{get, post},
@@ -41,7 +41,7 @@ pub async fn create_routes() -> Result<Router, Box<dyn std::error::Error>> {
         .await
         .unwrap_or_default();
 
-    llm::start_llm_worker(db_pool.clone(), slack_oauth_token.clone()).await;
+    start_llm_worker(db_pool.clone(), slack_oauth_token.clone()).await;
 
     let app_state = AppState {
         db_pool,
