@@ -2,7 +2,7 @@ mod utils;
 use super::routes::SlackOAuthToken;
 use std::thread;
 use tokio::runtime::Handle;
-use utils::{print_stats, run_model_iteraction, start_model};
+use utils::Model;
 
 use sqlx::SqlitePool;
 
@@ -19,7 +19,6 @@ pub async fn start_llm_worker(db_pool: SqlitePool, slack_oauth_token: SlackOAuth
         let seed = None;
         let repeat_penalty = 1.1;
         let repeat_last_n = 64;
-        print_stats(temperature, repeat_penalty, repeat_last_n);
         loop {
             let res = thread::scope(|s| {
                 s.spawn(|| {
@@ -27,12 +26,14 @@ pub async fn start_llm_worker(db_pool: SqlitePool, slack_oauth_token: SlackOAuth
                         thread_priority::ThreadPriority::Min,
                     )
                     .unwrap_or_default();
-                    let (mut model_weights, tokenizer, mut logits_processor) =
-                        start_model(temperature, top_p, seed)
-                            .map_err(|e| {
-                                println!("Failed to start model:\n{e}");
-                            })
-                            .unwrap();
+                    let mut llm_model = Model::start_model(
+                        temperature,
+                        top_p,
+                        seed,
+                        sample_len,
+                        repeat_penalty,
+                        repeat_last_n,
+                    )?;
 
                     loop {
                         // async task to select a task from the queue
@@ -50,16 +51,8 @@ pub async fn start_llm_worker(db_pool: SqlitePool, slack_oauth_token: SlackOAuth
                                 .map_err(|e| format!("Failed to get session state: {e}"))
                         })?;
 
-                        let (next_pre_prompt_tokens, generated_text) = run_model_iteraction(
-                            prompt_str,
-                            &mut model_weights,
-                            &tokenizer,
-                            &mut logits_processor,
-                            pre_prompt_tokens,
-                            sample_len,
-                            repeat_penalty,
-                            repeat_last_n,
-                        )?;
+                        let (next_pre_prompt_tokens, generated_text) =
+                            llm_model.run_model_iteraction(prompt_str, pre_prompt_tokens)?;
 
                         let encoded: Vec<u8> = bincode::serialize(&next_pre_prompt_tokens)
                             .map_err(|e| format!("Failed to encode model {e}"))?;
