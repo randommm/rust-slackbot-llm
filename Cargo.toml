@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-axum = { version = "0.6", features = ["headers", "macros"] }
+axum = { version = "0.7", features = ["macros"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
 reqwest = { version = "0.11", features = ["multipart", "json"] }
 sqlx = { version = "0.7", features = ["sqlite", "runtime-tokio"] }
