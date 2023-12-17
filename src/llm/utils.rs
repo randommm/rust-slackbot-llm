@@ -49,9 +49,9 @@ impl Model {
     ) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
         print_stats(temperature, repeat_penalty, repeat_last_n);
 
-        let repo = "TheBloke/Mistral-7B-Instruct-v0.1-GGUF";
+        let repo = "TheBloke/Mixtral-8x7B-Instruct-v0.1-GGUF";
         // let filename = "mistral-7b-instruct-v0.1.Q5_K_M.gguf";
-        let filename = "mistral-7b-instruct-v0.1.Q2_K.gguf";
+        let filename = "mixtral-8x7b-instruct-v0.1.Q2_K.gguf";
 
         let api = hf_hub::api::sync::Api::new()?;
         let api = api.model(repo.to_string());
@@ -79,7 +79,7 @@ impl Model {
         println!("model built");
 
         let api = hf_hub::api::sync::Api::new()?;
-        let repo = "mistralai/Mistral-7B-v0.1";
+        let repo = "mistralai/Mixtral-8x7B-v0.1";
         let api = api.model(repo.to_string());
         let tokenizer_path = api.get("tokenizer.json")?;
         let tokenizer = Tokenizer::from_file(tokenizer_path)

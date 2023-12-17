@@ -18,9 +18,9 @@ dotenvy = "0.15"
 plotters = "0.3"
 plotters-bitmap = "0.3"
 image = { version = "0.24", features = ["png"] }
-candle = { version = "0.3.0", package = "candle-core" }
-candle-nn = { version = "0.3.0" }
-candle-transformers = { version = "0.3.0" }
+candle = { git = "https://github.com/huggingface/candle.git", package = "candle-core", file = "candle-core/Cargo.toml" }
+candle-nn = { git = "https://github.com/huggingface/candle.git" }
+candle-transformers = { git = "https://github.com/huggingface/candle.git" }
 hf-hub = "0.3.2"
 tokenizers = "0.15"
 thread-priority = "0.15"
