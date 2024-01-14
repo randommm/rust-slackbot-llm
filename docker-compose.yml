@@ -18,3 +18,4 @@ services:
               source: ./db
               target: /app/db
               read_only: false
+            - /root/.cache/huggingface/:/root/.cache/huggingface/
