@@ -31,6 +31,7 @@ pub fn print_stats(temperature: Option<f64>, repeat_penalty: f32, repeat_last_n:
 
 pub struct Model {
     model_weights: ModelWeights,
+    device: Device,
     tokenizer: Tokenizer,
     logits_processor: LogitsProcessor,
     sample_len: usize,
@@ -60,13 +61,15 @@ impl Model {
         let mut file = std::fs::File::open(model_path)?;
         let start = std::time::Instant::now();
 
+        let device = Device::Cpu;
+
         let model_weights = {
             let model = gguf_file::Content::read(&mut file)?;
             let mut total_size_in_bytes = 0;
             for (_, tensor) in model.tensor_infos.iter() {
                 let elem_count = tensor.shape.elem_count();
                 total_size_in_bytes +=
-                    elem_count * tensor.ggml_dtype.type_size() / tensor.ggml_dtype.blck_size();
+                    elem_count * tensor.ggml_dtype.type_size() / tensor.ggml_dtype.block_size();
             }
             println!(
                 "loaded {:?} tensors ({}) in {:.2}s",
@@ -74,7 +77,7 @@ impl Model {
                 &format_size(total_size_in_bytes),
                 start.elapsed().as_secs_f32(),
             );
-            ModelWeights::from_gguf(model, &mut file)?
+            ModelWeights::from_gguf(model, &mut file, &device)?
         };
         println!("model built");
 
@@ -102,6 +105,7 @@ impl Model {
 
         Ok(Self {
             model_weights,
+            device,
             tokenizer,
             logits_processor,
             sample_len,
@@ -132,10 +136,9 @@ impl Model {
         };
         let mut all_tokens = vec![];
 
-        let device = Device::Cpu;
         let start_prompt_processing = std::time::Instant::now();
         let mut next_token = {
-            let input = Tensor::new(prompt_tokens.as_slice(), &device)?.unsqueeze(0)?;
+            let input = Tensor::new(prompt_tokens.as_slice(), &self.device)?.unsqueeze(0)?;
             let logits = self.model_weights.forward(&input, 0)?;
             let logits = logits.squeeze(0)?;
             self.logits_processor.sample(&logits)?
@@ -149,7 +152,7 @@ impl Model {
 
         let start_post_prompt = std::time::Instant::now();
         for index in 0..to_sample {
-            let input = Tensor::new(&[next_token], &device)?.unsqueeze(0)?;
+            let input = Tensor::new(&[next_token], &self.device)?.unsqueeze(0)?;
             let logits = self
                 .model_weights
                 .forward(&input, prompt_tokens.len() + index)?;
