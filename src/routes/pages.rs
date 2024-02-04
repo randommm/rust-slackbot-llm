@@ -5,6 +5,7 @@ use axum::{
     response::IntoResponse,
     Json,
 };
+use chrono::Local;
 use hmac::{Hmac, Mac};
 use regex::Regex;
 use reqwest::{header::AUTHORIZATION, multipart};
@@ -86,8 +87,9 @@ pub async fn try_process_slack_events(
     let value = process_slack_events(slack_oauth_token, db_pool, &query).await;
 
     if let Err(ref value) = value {
+        print!("{}: ", Local::now());
         println!(
-            "Failed to process Slack event.\nGot error:\n{:?}\nGot payload:{:?} ",
+            "failed to process Slack event.\nGot error:\n{:?}\nGot payload:{:?} ",
             value, query
         );
     }
@@ -127,7 +129,8 @@ async fn process_slack_events(
             .unwrap_or(x.to_owned()),
         None => "unknown".to_owned(),
     };
-    print!("From user {user} at channel {channel} and type {type_}, received message: {text}. ");
+    print!("{}: ", Local::now());
+    print!("from user {user} at channel {channel} and type {type_}, received message: {text}. ");
 
     let thread_ts = event.get("thread_ts");
     let thread_ts = match thread_ts {
