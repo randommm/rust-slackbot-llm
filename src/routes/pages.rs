@@ -5,8 +5,8 @@ use axum::{
     response::IntoResponse,
     Json,
 };
-use chrono::Local;
 use hmac::{Hmac, Mac};
+use log::{error, info, trace};
 use regex::Regex;
 use reqwest::{header::AUTHORIZATION, multipart};
 use serde_json::Value;
@@ -24,8 +24,8 @@ pub async fn get_slack_events(
     body: String,
 ) -> Result<impl IntoResponse, AppError> {
     if PRINT_SLACK_EVENTS {
-        println!("Slack event body: {:?}", body);
-        println!("Slack event headers: {:?}", headers);
+        info!("Slack event body: {:?}", body);
+        info!("Slack event headers: {:?}", headers);
     }
 
     let provided_timestamp = headers
@@ -50,7 +50,7 @@ pub async fn get_slack_events(
         .map(|i| u8::from_str_radix(i.iter().collect::<String>().as_str(), 16))
         .collect::<Result<Vec<_>, _>>()
         .map_err(|e| format!("Invalid hex on proposed slack signature: {e}"))?;
-    // println!("provided_signature: {:?}", provided_signature);
+    trace!("provided_signature: {:?}", provided_signature);
 
     // check timestamp
     let now = SystemTime::now()
@@ -87,8 +87,7 @@ pub async fn try_process_slack_events(
     let value = process_slack_events(slack_oauth_token, db_pool, &query).await;
 
     if let Err(ref value) = value {
-        print!("{}: ", Local::now());
-        println!(
+        error!(
             "failed to process Slack event.\nGot error:\n{:?}\nGot payload:{:?} ",
             value, query
         );
@@ -129,8 +128,7 @@ async fn process_slack_events(
             .unwrap_or(x.to_owned()),
         None => "unknown".to_owned(),
     };
-    print!("{}: ", Local::now());
-    print!("from user {user} at channel {channel} and type {type_}, received message: {text}. ");
+    info!("from user {user} at channel {channel} and type {type_}, received message: {text}. ");
 
     let thread_ts = event.get("thread_ts");
     let thread_ts = match thread_ts {
@@ -149,7 +147,7 @@ async fn process_slack_events(
         _ => text.trim().to_owned(),
     };
 
-    println!("Processed message: {text}.");
+    info!("Processed message: {text}.");
 
     let reqw_client = reqwest::Client::new();
 
@@ -307,7 +305,7 @@ pub async fn plot_random_stuff(
     let reqw_response: Value = serde_json::from_str(&reqw_response)
         .map_err(|e| format!("Could not parse response body: {e}"))?;
     if PRINT_SLACK_EVENTS {
-        println!("Received send plot response {:?}", reqw_response);
+        info!("Received send plot response {:?}", reqw_response);
     }
     Ok(())
 }

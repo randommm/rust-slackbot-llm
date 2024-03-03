@@ -1,14 +1,12 @@
 mod utils;
 use super::routes::SlackOAuthToken;
+use log::error;
+use reqwest::{header::AUTHORIZATION, multipart};
+use sqlx::SqlitePool;
 use std::thread;
+use std::time::SystemTime;
 use tokio::runtime::Handle;
 use utils::Model;
-
-use sqlx::SqlitePool;
-
-use reqwest::{header::AUTHORIZATION, multipart};
-
-use std::time::SystemTime;
 
 pub async fn start_llm_worker(db_pool: SqlitePool, slack_oauth_token: SlackOAuthToken) {
     let async_handle = Handle::current();
@@ -86,7 +84,7 @@ pub async fn start_llm_worker(db_pool: SqlitePool, slack_oauth_token: SlackOAuth
                                 Ok::<(), Box<dyn std::error::Error + Send + Sync>>(())
                             })
                             .unwrap_or_else(|e| {
-                                println!("Failed to save model state:\n{e}");
+                                error!("Failed to save model state:\n{e}");
                             });
 
                         async_handle
@@ -114,7 +112,7 @@ pub async fn start_llm_worker(db_pool: SqlitePool, slack_oauth_token: SlackOAuth
                                 Ok::<(), Box<dyn std::error::Error + Send + Sync>>(())
                             })
                             .unwrap_or_else(|e| {
-                                println!("Failed to send user message:\n{e}");
+                                error!("Failed to send user message:\n{e}");
                             });
                     }
 
@@ -123,7 +121,7 @@ pub async fn start_llm_worker(db_pool: SqlitePool, slack_oauth_token: SlackOAuth
                 })
                 .join()
             });
-            println!("LLM worker thread exited with message: {res:?}, restarting in 5 seconds");
+            error!("LLM worker thread exited with message: {res:?}, restarting in 5 seconds");
             thread::sleep(std::time::Duration::from_secs(5));
         }
     });
@@ -169,10 +167,7 @@ async fn get_next_task(
                     break (task_id, prompt_str, channel, thread_ts);
                 }
             }
-            Err(_) => {
-                // println!("No work to do, sleeping {e} {now}");
-                tokio::time::sleep(tokio::time::Duration::from_secs(1)).await
-            }
+            Err(_) => tokio::time::sleep(tokio::time::Duration::from_secs(1)).await,
         }
     };
     Ok((task_id, prompt_str, channel, thread_ts))

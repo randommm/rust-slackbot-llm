@@ -7,18 +7,19 @@ use candle::quantized::gguf_file;
 use candle::{Device, Tensor};
 use candle_transformers::generation::LogitsProcessor;
 use candle_transformers::models::quantized_llama as model;
+use log::{info, trace};
 use model::ModelWeights;
 use tokenizers::Tokenizer;
 
 pub fn print_stats(temperature: Option<f64>, repeat_penalty: f32, repeat_last_n: usize) {
-    println!(
+    info!(
         "avx: {}, neon: {}, simd128: {}, f16c: {}",
         candle::utils::with_avx(),
         candle::utils::with_neon(),
         candle::utils::with_simd128(),
         candle::utils::with_f16c()
     );
-    println!(
+    info!(
         "temp: {:.2} repeat-penalty: {:.2} repeat-last-n: {}",
         {
             #[allow(clippy::unnecessary_literal_unwrap)]
@@ -71,7 +72,7 @@ impl Model {
                 total_size_in_bytes +=
                     elem_count * tensor.ggml_dtype.type_size() / tensor.ggml_dtype.block_size();
             }
-            println!(
+            info!(
                 "loaded {:?} tensors ({}) in {:.2}s",
                 model.tensor_infos.len(),
                 &format_size(total_size_in_bytes),
@@ -79,7 +80,7 @@ impl Model {
             );
             ModelWeights::from_gguf(model, &mut file, &device)?
         };
-        println!("model built");
+        info!("model built");
 
         let api = hf_hub::api::sync::Api::new()?;
         let repo = "mistralai/Mixtral-8x7B-v0.1";
@@ -95,13 +96,13 @@ impl Model {
                     .duration_since(std::time::SystemTime::UNIX_EPOCH)
                     .unwrap_or_default()
                     .as_secs();
-                println!("Using {} as LogitsProcessor RNG seed", seed);
+                info!("Using {} as LogitsProcessor RNG seed", seed);
                 seed
             }),
             temperature,
             top_p,
         );
-        println!("Starting LLM model");
+        info!("Starting LLM model");
 
         Ok(Self {
             model_weights,
@@ -120,7 +121,7 @@ impl Model {
         pre_prompt_tokens: Vec<u32>,
     ) -> Result<(Vec<u32>, String), Box<dyn std::error::Error + Send + Sync>> {
         let prompt_str = format!("[INST] {prompt_str} [/INST]");
-        // print!("{}", &prompt_str);
+        trace!("{}", &prompt_str);
         let tokens = self
             .tokenizer
             .encode(prompt_str, true)
@@ -176,12 +177,12 @@ impl Model {
             };
         }
         let dt = start_post_prompt.elapsed();
-        println!(
+        info!(
             "{:4} prompt tokens processed: {:.2} token/s",
             prompt_tokens.len(),
             prompt_tokens.len() as f64 / prompt_dt.as_secs_f64(),
         );
-        println!(
+        info!(
             "{:4} tokens generated:        {:.2} token/s",
             to_sample,
             to_sample as f64 / dt.as_secs_f64(),

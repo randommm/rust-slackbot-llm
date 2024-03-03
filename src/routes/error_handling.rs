@@ -2,6 +2,7 @@ use axum::{
     http::StatusCode,
     response::{IntoResponse, Json},
 };
+use log::error;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
@@ -51,7 +52,7 @@ impl IntoResponse for AppError {
 
         let internal_message =
             format!("Error id: {}. Message: {}", error_id, self.internal_message);
-        println!("{}. AppError: {}", error_id, internal_message);
+        error!("{}. AppError: {}", error_id, internal_message);
 
         let user_message = self.user_message.unwrap_or("Server error".to_owned());
 
