@@ -18,12 +18,12 @@ dotenvy = "0.15"
 plotters = "0.3"
 plotters-bitmap = "0.3"
 image = { version = "0.24", features = ["png"] }
-candle = { version = "0.3", package = "candle-core" }
-candle-nn = { version = "0.3" }
-candle-transformers = { version = "0.3" }
+candle = { version = "0.4", package = "candle-core" }
+candle-nn = { version = "0.4" }
+candle-transformers = { version = "0.4" }
 hf-hub = "0.3.2"
 tokenizers = "0.15"
-thread-priority = "0.15"
+thread-priority = "0.16"
 regex = "1.5"
 chrono = "0.4.33"
 
