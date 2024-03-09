@@ -2666,6 +2666,7 @@ dependencies = [
  "dotenvy",
  "hf-hub",
  "hmac",
+ "http 1.0.0",
  "image",
  "log",
  "plotters",

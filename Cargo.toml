@@ -34,3 +34,4 @@ opt-level = 3
 
 [dev-dependencies]
 axum-test = "14"
+http = "1"
