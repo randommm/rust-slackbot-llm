@@ -31,3 +31,6 @@ pretty_env_logger = "0.5"
 
 [profile.dev.package."*"]
 opt-level = 3
+
+[dev-dependencies]
+axum-test = "14"

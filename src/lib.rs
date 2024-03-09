@@ -1,5 +1,5 @@
 mod llm;
-mod routes;
+pub mod routes;
 use log::info;
 use tokio::net::TcpListener;
 

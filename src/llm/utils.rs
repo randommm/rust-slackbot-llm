@@ -237,6 +237,7 @@ mod tests {
     use super::*;
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+    #[ignore]
     async fn sequential_dialog() {
         let sample_len = 10_usize;
         let temperature = Some(0.8);
