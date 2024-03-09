@@ -14,8 +14,6 @@ use sha2::Sha256;
 use sqlx::SqlitePool;
 use std::time::SystemTime;
 
-const PRINT_SLACK_EVENTS: bool = false;
-
 pub async fn receive_slack_events(
     State(db_pool): State<SqlitePool>,
     State(slack_signing_secret): State<SlackSigningSecret>,
@@ -23,10 +21,8 @@ pub async fn receive_slack_events(
     headers: HeaderMap,
     body: String,
 ) -> Result<impl IntoResponse, AppError> {
-    if PRINT_SLACK_EVENTS {
-        info!("Slack event body: {:?}", body);
-        info!("Slack event headers: {:?}", headers);
-    }
+    trace!("Slack event body: {:?}", body);
+    trace!("Slack event headers: {:?}", headers);
 
     let provided_timestamp = headers
         .get("X-Slack-Request-Timestamp")
@@ -318,9 +314,8 @@ pub async fn plot_random_stuff(
         .map_err(|e| format!("Failed to read response body: {e}"))?;
     let reqw_response: Value = serde_json::from_str(&reqw_response)
         .map_err(|e| format!("Could not parse response body: {e}"))?;
-    if PRINT_SLACK_EVENTS {
-        info!("Received send plot response {:?}", reqw_response);
-    }
+    trace!("Received send plot response {:?}", reqw_response);
+
     Ok(())
 }
 
