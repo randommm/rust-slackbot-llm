@@ -16,7 +16,7 @@ use std::time::SystemTime;
 
 const PRINT_SLACK_EVENTS: bool = false;
 
-pub async fn get_slack_events(
+pub async fn receive_slack_events(
     State(db_pool): State<SqlitePool>,
     State(slack_signing_secret): State<SlackSigningSecret>,
     State(slack_oauth_token): State<SlackOAuthToken>,
@@ -149,8 +149,6 @@ async fn process_slack_events(
 
     info!("Processed message: {text}.");
 
-    let reqw_client = reqwest::Client::new();
-
     let reply_to_user = if text == "delete" || text == "\"delete\"" {
         let _ = sqlx::query("DELETE FROM sessions WHERE channel = $1 AND thread_ts = $2")
             .bind(channel)
@@ -198,12 +196,29 @@ async fn process_slack_events(
         initial_message
     };
 
-    let form = multipart::Form::new()
-        .text("text", reply_to_user)
-        .text("channel", channel.to_owned())
-        .text("thread_ts", thread_ts.to_owned());
+    send_user_message(
+        &slack_oauth_token,
+        channel.to_owned(),
+        thread_ts.to_owned(),
+        reply_to_user,
+    )
+    .await?;
 
-    let reqw_response = reqw_client
+    Ok(())
+}
+
+pub async fn send_user_message(
+    slack_oauth_token: &SlackOAuthToken,
+    channel: String,
+    thread_ts: String,
+    text: String,
+) -> Result<(), AppError> {
+    let form = multipart::Form::new()
+        .text("text", text)
+        .text("channel", channel)
+        .text("thread_ts", thread_ts);
+
+    let reqw_response = reqwest::Client::new()
         .post("https://slack.com/api/chat.postMessage")
         .header(AUTHORIZATION, format!("Bearer {}", slack_oauth_token.0))
         .multipart(form)
@@ -213,7 +228,6 @@ async fn process_slack_events(
         .text()
         .await
         .map_err(|e| format!("Failed to read reqwest response body: {e}"))?;
-
     Ok(())
 }
 

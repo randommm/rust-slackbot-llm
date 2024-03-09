@@ -1,5 +1,5 @@
 mod error_handling;
-mod pages;
+pub(crate) mod pages;
 use super::llm::start_llm_worker;
 use axum::{
     extract::FromRef,
@@ -50,7 +50,7 @@ pub async fn create_routes() -> Result<Router, Box<dyn std::error::Error>> {
     };
 
     let api = Router::new()
-        .route("/slack_events", post(pages::get_slack_events))
+        .route("/slack_events", post(pages::receive_slack_events))
         .route("/", get(pages::index))
         .with_state(app_state.clone());
 

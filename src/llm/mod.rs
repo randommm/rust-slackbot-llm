@@ -1,4 +1,5 @@
 mod utils;
+use super::routes::pages::send_user_message;
 use super::routes::SlackOAuthToken;
 use log::error;
 use reqwest::{header::AUTHORIZATION, multipart};
@@ -87,32 +88,17 @@ pub async fn start_llm_worker(db_pool: SqlitePool, slack_oauth_token: SlackOAuth
                                 error!("Failed to save model state:\n{e}");
                             });
 
+                        let reply_to_user = "Reply from the LLM:\n".to_owned()
+                            + &generated_text[1..generated_text.len() - 4];
                         async_handle
-                            .block_on(async {
-                                let reply_to_user = "Reply from the LLM:\n".to_owned()
-                                    + &generated_text[1..generated_text.len() - 4];
-
-                                let form = multipart::Form::new()
-                                    .text("text", reply_to_user)
-                                    .text("channel", channel.to_owned())
-                                    .text("thread_ts", thread_ts.clone());
-
-                                let reqw_response = reqwest::Client::new()
-                                    .post("https://slack.com/api/chat.postMessage")
-                                    .header(
-                                        AUTHORIZATION,
-                                        format!("Bearer {}", slack_oauth_token.0),
-                                    )
-                                    .multipart(form)
-                                    .send()
-                                    .await?;
-                                reqw_response.text().await.map_err(|e| {
-                                    format!("Failed to read reqwest response body: {e}")
-                                })?;
-                                Ok::<(), Box<dyn std::error::Error + Send + Sync>>(())
-                            })
+                            .block_on(send_user_message(
+                                &slack_oauth_token,
+                                channel,
+                                thread_ts,
+                                reply_to_user,
+                            ))
                             .unwrap_or_else(|e| {
-                                error!("Failed to send user message:\n{e}");
+                                error!("{:?}", e);
                             });
                     }
 
@@ -227,34 +213,3 @@ async fn get_session_state(
 
     Ok(pre_prompt_tokens)
 }
-
-// #[cfg(test)]
-// mod tests {
-//     use super::ModelBuilder;
-//     use tokio::sync::oneshot;
-
-//     #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
-//     async fn sequential_dialog() {
-//         let model = ModelBuilder {
-//             sample_len: 30,
-//             ..Default::default()
-//         }
-//         .build()
-//         .unwrap();
-//         let tx = model.run().await;
-
-//         let prompt = "Create a Rust program in 20 words".to_string();
-//         let pre_prompt_tokens = vec![];
-
-//         let (oneshot_tx, oneshot_rx) = oneshot::channel();
-//         tx.send((prompt, pre_prompt_tokens, oneshot_tx)).unwrap();
-//         let (output, pre_prompt_tokens) = oneshot_rx.await.unwrap();
-//         println!("{output}");
-
-//         let prompt = "Give me the Cargo.toml in 20 words".to_string();
-//         let (oneshot_tx, oneshot_rx) = oneshot::channel();
-//         tx.send((prompt, pre_prompt_tokens, oneshot_tx)).unwrap();
-//         let (output, _) = oneshot_rx.await.unwrap();
-//         println!("{output}");
-//     }
-// }

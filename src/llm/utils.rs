@@ -231,3 +231,47 @@ fn format_size(size_in_bytes: usize) -> String {
         format!("{:.2}GB", size_in_bytes as f64 / 1e9)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+    async fn sequential_dialog() {
+        let sample_len = 10_usize;
+        let temperature = Some(0.8);
+        let top_p = None;
+        let seed = Some(1);
+        let repeat_penalty = 1.1;
+        let repeat_last_n = 64;
+
+        let mut llm_model = Model::start_model(
+            temperature,
+            top_p,
+            seed,
+            sample_len,
+            repeat_penalty,
+            repeat_last_n,
+        )
+        .unwrap();
+
+        let prompt = "Create a Rust program, just code, no explanation".to_string();
+        let pre_prompt_tokens = vec![];
+
+        let (next_prompt_tokens, generated_text) = llm_model
+            .run_model_iteraction(prompt, pre_prompt_tokens)
+            .unwrap();
+
+        assert_eq!(generated_text, " ```rust\nuse std::fs;\n\n");
+
+        let prompt = "Explain previous code.".to_string();
+
+        let (_, generated_text) = llm_model
+            .run_model_iteraction(prompt, next_prompt_tokens)
+            .unwrap();
+        assert_eq!(
+            generated_text,
+            " The previous code is written in the Rust programming"
+        );
+    }
+}
