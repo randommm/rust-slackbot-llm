@@ -289,7 +289,7 @@ pub async fn plot_random_stuff(
     image
         .write_to(
             &mut std::io::Cursor::new(&mut bytes),
-            image::ImageOutputFormat::Png,
+            image::ImageFormat::Png,
         )
         .map_err(|e| format!("image write_to error: {e}"))?;
 
